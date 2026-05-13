@@ -1,0 +1,55 @@
+name: Production Builds
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-desktop:
+    name: Desktop (Tauri)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - name: Install dependencies
+        run: npm install
+      - name: Build Frontend
+        run: npm run build
+      # Note: Tauri requires a rust environment, which is natively supported on GitHub Actions runners
+      # This is a skeleton workflow that triggers the build process
+      - name: Build Desktop (info only)
+        run: echo "Tauri build would execute here. Ensure src-tauri is configured."
+
+  build-mobile:
+    name: Mobile (Android APK)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies
+        run: npm install
+      - name: Build Web App
+        run: npm run build
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+      - name: Capacitor Sync
+        run: |
+          npx cap add android || true
+          npx cap sync android
+      - name: Build APK
+        run: |
+          cd android
+          ./gradlew assembleDebug
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-reels-mobile-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk

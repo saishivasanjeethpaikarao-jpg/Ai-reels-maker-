@@ -1,0 +1,170 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+}
+
+@layer base {
+  body {
+    @apply font-sans bg-[#020617] text-slate-200 antialiased;
+  }
+}
+
+.glass-panel {
+  @apply bg-slate-900/40 backdrop-blur-xl border border-white/5 rounded-2xl;
+}
+
+.neo-shadow {
+  box-shadow: 0 20px 80px -20px rgba(14, 165, 233, 0.1), 0 0 40px -10px rgba(14, 165, 233, 0.05);
+}
+
+.custom-scrollbar::-webkit-scrollbar {
+  width: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-transparent;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-slate-800 rounded-full hover:bg-sky-500/30 transition-colors;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  @apply bg-white/2;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-10px); }
+}
+
+.float-animation {
+  animation: float 6s ease-in-out infinite;
+}
+
+.cyber-button {
+  @apply relative overflow-hidden transition-all duration-300 active:scale-95;
+}
+
+.cyber-button::after {
+  content: '';
+  @apply absolute inset-0 bg-white/10 opacity-0 transition-opacity duration-300;
+}
+
+.cyber-button:hover::after {
+  @apply opacity-100;
+}
+
+/* React Quill Styles */
+.ql-toolbar.ql-snow {
+  @apply bg-slate-900 border-0 border-b border-slate-800 p-2;
+}
+
+.ql-container.ql-snow {
+  border: 0 !important;
+  height: 180px !important;
+}
+
+.ql-editor {
+  @apply text-white font-bold px-6 py-4;
+  font-size: 1.125rem !important;
+  line-height: 1.6 !important;
+}
+
+/* Syntax Highlighting for Bold/Strong */
+.ql-editor strong, .ql-editor b {
+  @apply text-sky-400 font-black;
+  color: theme('colors.sky.400') !important;
+  font-weight: 900 !important;
+  text-shadow: 0 0 10px rgba(14, 165, 233, 0.3);
+}
+
+.ql-editor em, .ql-editor i {
+  @apply text-emerald-400/80;
+  color: theme('colors.emerald.400 / 80%') !important;
+}
+
+.ql-editor u {
+  @apply decoration-sky-500/50 underline-offset-4;
+  text-decoration: underline !important;
+  text-decoration-color: theme('colors.sky.500 / 50%') !important;
+}
+
+.ql-editor h1 {
+  @apply text-3xl font-black italic uppercase tracking-tighter text-white mb-4 border-l-4 border-sky-500 pl-4;
+  font-size: 1.875rem !important;
+  border-left-width: 4px !important;
+}
+
+.ql-editor h2 {
+  @apply text-xl font-black italic uppercase tracking-tighter text-slate-400 mb-2 border-l-4 border-slate-700 pl-4;
+  font-size: 1.25rem !important;
+  border-left-width: 4px !important;
+}
+
+.ql-editor.ql-blank::before {
+  @apply text-slate-800 font-bold italic;
+  left: 1.5rem !important;
+}
+
+.ql-snow .ql-stroke {
+  stroke: theme('colors.slate.500') !important;
+}
+
+.ql-snow .ql-fill {
+  fill: theme('colors.slate.500') !important;
+}
+
+.ql-snow .ql-picker {
+  @apply text-slate-500;
+}
+
+.ql-snow.ql-toolbar button:hover .ql-stroke,
+.ql-snow.ql-toolbar button:hover .ql-fill,
+.ql-snow.ql-toolbar button.ql-active .ql-stroke,
+.ql-snow.ql-toolbar button.ql-active .ql-fill {
+  stroke: theme('colors.sky.500') !important;
+  fill: theme('colors.sky.500') !important;
+}
+
+.ql-snow.ql-toolbar button:hover,
+.ql-snow.ql-toolbar button.ql-active {
+  @apply bg-sky-500/10 rounded;
+}
+
+.ql-snow .ql-picker-options {
+  @apply bg-slate-900 border border-slate-800 rounded-xl p-2 shadow-2xl;
+  background-color: theme('colors.slate.900') !important;
+  border-width: 1px !important;
+}
+
+.ql-snow .ql-picker-item {
+  @apply text-slate-400 hover:text-white transition-colors;
+}
+
+.ql-snow .ql-picker-label {
+  @apply text-slate-400 font-bold uppercase text-[10px] tracking-widest;
+  color: theme('colors.slate.400') !important;
+}
+
+.ql-snow .ql-picker.ql-header .ql-picker-label::before,
+.ql-snow .ql-picker.ql-header .ql-picker-item::before {
+  content: 'Format' !important;
+}
+
+.ql-snow .ql-picker.ql-header .ql-picker-label[data-value="1"]::before,
+.ql-snow .ql-picker.ql-header .ql-picker-item[data-value="1"]::before {
+  content: 'Scene Head' !important;
+}
+
+.ql-snow .ql-picker.ql-header .ql-picker-label[data-value="2"]::before,
+.ql-snow .ql-picker.ql-header .ql-picker-item[data-value="2"]::before {
+  content: 'Action' !important;
+}
+
+.ql-snow .ql-color-picker .ql-picker-options {
+  width: 150px !important;
+}
