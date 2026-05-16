@@ -1,15 +1,20 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import cors from 'cors';
 import axios from 'axios';
 import dotenv from 'dotenv';
+import { GoogleGenAI } from "@google/genai";
 
 dotenv.config();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+  httpOptions: {
+    headers: {
+      'User-Agent': 'aistudio-build',
+    }
+  }
+});
 
 async function startServer() {
   const app = express();
@@ -87,12 +92,23 @@ async function startServer() {
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const baseUrl = `${protocol}://${host}`;
 
+    // Register assets found in scenes (proxied for external APIs)
+    const processedScenes = scenes.map((scene: any) => {
+      if (scene.assetUrl && scene.assetUrl.startsWith('data:')) {
+        const assetId = Math.random().toString(36).substring(7);
+        const type = scene.assetType === 'video' ? 'video/mp4' : 'image/jpeg';
+        assetCache.set(assetId, { data: scene.assetUrl, type });
+        return { ...scene, assetUrl: `${baseUrl}/api/assets/${assetId}` };
+      }
+      return scene;
+    });
+
     jobs.set(jobId, {
       id: jobId,
       status: 'pending',
       progress: 0,
       logs: [],
-      data: { script, scenes, language, topic, niche, tone, phone_number, ig_user_id, resolution, aspectRatio, keys, viral_metadata, hooks, user_assets: registeredAssets, baseUrl },
+      data: { script, scenes: processedScenes, language, topic, niche, tone, phone_number, ig_user_id, resolution, aspectRatio, keys, viral_metadata, hooks, user_assets: registeredAssets, baseUrl },
       result: null
     });
 
@@ -108,6 +124,23 @@ async function startServer() {
 
   app.get('/api/jobs', (req, res) => {
     res.json(Array.from(jobs.values()).reverse());
+  });
+
+  app.post('/api/gemini/suggest-broll', async (req, res) => {
+    try {
+      const { script_text, image_prompt } = req.body;
+      const response = await ai.models.generateContent({
+        model: "gemini-3-flash-preview",
+        config: {
+          systemInstruction: "You are an expert video director specializing in b-roll footage. Given a scene's script and visual prompt, suggest a short, high-impact b-roll overlay idea (e.g., 'close up of a lens flare', 'fast motion city traffic', 'macro shots of particles'). Keep it under 10 words. Respond with ONLY the suggestion text.",
+        },
+        contents: `Script: ${(script_text || '').replace(/<[^>]*>/g, '')}\nVisual Prompt: ${image_prompt}`,
+      });
+      res.json({ suggestion: response.text?.trim() || '' });
+    } catch (e: any) {
+      console.error('Gemini B-Roll Error:', e);
+      res.status(500).json({ error: e.message });
+    }
   });
 
   // Generic Intelligence Node
@@ -206,6 +239,7 @@ async function startServer() {
 
   // Vite setup
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
@@ -213,6 +247,9 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
+    if (path.basename(distPath) !== 'dist') {
+       // extra safety if process.cwd() is some weird state
+    }
     app.use(express.static(distPath));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
@@ -236,16 +273,20 @@ async function startServer() {
     const job = jobs.get(jobId);
     if (!job) return;
 
-    const log = (msg: string, progressAdd = 15) => {
+    const log = (msg: string, progressAdd?: number, absoluteProgress?: number) => {
       const timestamp = new Date().toISOString();
       job.logs.push(`[${timestamp}] ${msg}`);
-      job.progress = Math.min(100, job.progress + progressAdd);
-      console.log(`[Job ${jobId}] ${msg}`);
+      if (absoluteProgress !== undefined) {
+         job.progress = absoluteProgress;
+      } else if (progressAdd !== undefined) {
+         job.progress = Math.min(100, job.progress + progressAdd);
+      }
+      console.log(`[Job ${jobId}] [${job.progress}%] ${msg}`);
     };
 
     try {
       job.status = 'processing';
-      log('Node CPU: Initializing hardware nodes and fetching tactical script...', 5);
+      log('Node CPU: Initializing hardware nodes and fetching tactical script...', 0, 5);
 
       const userKeys = job.data.keys || {};
       const togetherKey = userKeys.together_key || process.env.TOGETHER_API_KEY;
@@ -258,8 +299,9 @@ async function startServer() {
       // 1. Image Generation
       const imageProvider = userKeys.image_provider || 'together';
       const aspect = job.data.aspectRatio || '9:16';
+      const style = job.data.style || 'cinematic';
+      const quality = job.data.quality || 'standard';
       const baseUrl = job.data.baseUrl || '';
-      const userAssets = job.data.user_assets || [];
       
       let imgWidth = 576;
       let imgHeight = 1024;
@@ -275,18 +317,21 @@ async function startServer() {
         falSize = 'square';
       }
 
-      log(`Node IMG: Starting synthesis via ${imageProvider.toUpperCase()} (${aspect})...`, 10);
+      log(`Node IMG: Starting synthesis via ${imageProvider.toUpperCase()} (${aspect}, Style: ${style.toUpperCase()})...`, 0, 10);
       
       const aiImages = await Promise.all(job.data.scenes.map(async (scene: any, index: number) => {
-        // Check if user provided an asset for this scene or just use it as fallback/additive
-        const userAsset = userAssets[index] || (userAssets.length > 0 ? userAssets[index % userAssets.length] : null);
+        // Increment progress slightly per scene
+        const perSceneInc = Math.floor(30 / (job.data.scenes.length || 1));
         
-        if (userAsset && userAsset.type === 'image') {
-          log(`Node IMG: Using User Asset for Scene #${index + 1}...`, 2);
-          return `${baseUrl}/api/assets/${userAsset.cacheId}`;
+        // Check if scene already has an assetUrl from timeline editor
+        if (scene.assetUrl) {
+          log(`Node IMG: Syncing Pre-synthesized Asset for Scene #${index + 1}...`, perSceneInc);
+          return scene.assetUrl;
         }
 
-        log(`Node IMG: Processing Scene #${index + 1}...`, 2);
+        const enhancedPrompt = `A ${style} style image. ${scene.image_prompt}. High fidelity, 4k, professional lighting.`;
+
+        log(`Node IMG: Synthesizing Scene #${index + 1}...`, perSceneInc);
         
         // prioritized sequence based on selection
         const providers = [];
@@ -302,7 +347,7 @@ async function startServer() {
           if (provider === 'fal' && falKey) {
             try {
               const res = await axios.post('https://fal.run/fal-ai/flux/schnell', {
-                prompt: scene.image_prompt,
+                prompt: enhancedPrompt,
                 image_size: falSize,
                 num_images: 1
               }, {
@@ -319,11 +364,11 @@ async function startServer() {
           if (provider === 'together' && togetherKey) {
             try {
               const res = await axios.post('https://api.together.xyz/v1/images/generations', {
-                model: 'black-forest-labs/FLUX.1-schnell-Free',
-                prompt: scene.image_prompt,
+                model: quality === 'ultra' ? 'black-forest-labs/FLUX.1-pro' : 'black-forest-labs/FLUX.1-schnell-Free',
+                prompt: enhancedPrompt,
                 width: imgWidth,
                 height: imgHeight,
-                steps: 4,
+                steps: quality === 'standard' ? 4 : 20,
                 n: 1
               }, {
                 headers: { Authorization: `Bearer ${togetherKey}` },
@@ -339,12 +384,12 @@ async function startServer() {
 
         // Final fallback
         log(`Node IMG: Using secondary pollination fallback for Scene #${index + 1}.`, 1);
-        return `https://image.pollinations.ai/prompt/${encodeURIComponent(scene.image_prompt)}?width=${imgWidth}&height=${imgHeight}&model=flux`;
+        return `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=${imgWidth}&height=${imgHeight}&model=flux`;
       }));
 
       // 2. Voiceover Synthesis
       const voiceProvider = userKeys.voice_provider || 'sarvam';
-      log(`Node VOX: Initializing acoustic mapping via ${voiceProvider.toUpperCase()}...`, 20);
+      log(`Node VOX: Initializing acoustic mapping via ${voiceProvider.toUpperCase()}...`, 0, 45);
       let audioUrl = '';
       
       const voiceAttemptOrder = voiceProvider === 'sarvam' ? ['sarvam', 'fish_audio'] : ['fish_audio', 'sarvam'];
@@ -403,60 +448,75 @@ async function startServer() {
         throw new Error("Critical Voiceover Synthesis Failure: All acoustic providers unreachable.");
       }
 
-      // 3. Video Assembly (Shotstack)
-      let shotstackVideoUrl = '';
+      // 3. Video Assembly
+      let finalVideoUrl = '';
+      
       if (shotstackKey) {
-        log('Node EDIT: Starting Shotstack assembly node...', 10);
+        log('Node EDIT: Starting Shotstack assembly node...', 0, 70);
+        
+        let currentTime = 0;
+        const totalDuration = job.data.scenes.reduce((acc: number, s: any) => acc + (s.duration || 5), 0);
+
         try {
           const shotstackRes = await axios.post('https://api.shotstack.io/edit/stage/render', {
             timeline: {
               background: "#1e1b4b",
               tracks: [
                 {
-                  clips: job.data.scenes.map((scene: any, i: number) => ({
-                    asset: {
-                      type: 'title',
-                      text: scene.script_text.toUpperCase(),
-                      style: 'bright',
-                      font: 'montserrat',
-                      size: 'small',
-                      color: '#0ea5e9'
-                    },
-                    start: i * 5,
-                    length: 5,
-                    position: 'center',
-                    offset: { y: -0.1 }
-                  }))
+                  clips: job.data.scenes.map((scene: any, i: number) => {
+                    const start = job.data.scenes.slice(0, i).reduce((acc: number, s: any) => acc + (s.duration || 5), 0);
+                    return {
+                      asset: {
+                        type: 'title',
+                        text: (scene.script_text || '').replace(/<[^>]*>/g, '').toUpperCase(),
+                        style: 'bright',
+                        font: 'montserrat',
+                        size: 'small',
+                        color: '#0ea5e9'
+                      },
+                      start,
+                      length: scene.duration || 5,
+                      position: 'center',
+                      offset: { y: -0.1 }
+                    };
+                  })
                 },
                 {
-                   clips: job.data.scenes.map((scene: any, i: number) => ({
-                    asset: {
-                      type: 'title',
-                      text: `#${job.data.niche || 'reelfactory'}`,
-                      style: 'minimal',
-                      font: 'open-sans',
-                      size: 'x-small',
-                      color: '#ffffff'
-                    },
-                    start: i * 5,
-                    length: 5,
-                    position: 'bottom',
-                    offset: { y: -0.3 }
-                  }))
+                   clips: job.data.scenes.map((scene: any, i: number) => {
+                    const start = job.data.scenes.slice(0, i).reduce((acc: number, s: any) => acc + (s.duration || 5), 0);
+                    return {
+                      asset: {
+                        type: 'title',
+                        text: `#${job.data.niche || 'reelfactory'}`,
+                        style: 'minimal',
+                        font: 'open-sans',
+                        size: 'x-small',
+                        color: '#ffffff'
+                      },
+                      start,
+                      length: scene.duration || 5,
+                      position: 'bottom',
+                      offset: { y: -0.3 }
+                    };
+                  })
                 },
                 {
-                  clips: aiImages.map((img, i) => {
-                    const userAsset = userAssets[i] || (userAssets.length > 0 ? userAssets[i % userAssets.length] : null);
-                    const isVideo = userAsset && userAsset.type === 'video';
+                   clips: aiImages.map((img, i) => {
+                    const scene = job.data.scenes[i];
+                    const isVideo = scene.assetType === 'video';
+                    const start = job.data.scenes.slice(0, i).reduce((acc: number, s: any) => acc + (s.duration || 5), 0);
                     
                     return {
                       asset: { 
                         type: isVideo ? 'video' : 'image', 
-                        src: isVideo ? `${baseUrl}/api/assets/${userAsset.cacheId}` : img 
+                        src: img 
                       },
-                      start: i * 5,
-                      length: 5,
-                      transition: { in: 'fade', out: 'fade' }
+                      start,
+                      length: scene.duration || 5,
+                      transition: { 
+                        in: scene.transitionIn || 'fade', 
+                        out: scene.transitionOut || 'fade' 
+                      }
                     } as any;
                   })
                 },
@@ -464,7 +524,7 @@ async function startServer() {
                   clips: [{
                     asset: { type: 'audio', src: audioUrl },
                     start: 0,
-                    length: job.data.scenes.length * 5
+                    length: totalDuration
                   }]
                 }
               ]
@@ -494,7 +554,7 @@ async function startServer() {
               log(`Node EDIT: Render status: ${jobStatus.toUpperCase()} (Attempt ${attempts}/15)...`, 1);
               
               if (jobStatus === 'done') {
-                shotstackVideoUrl = status.data.response.url;
+                finalVideoUrl = status.data.response.url;
                 polled = true;
               } else if (jobStatus === 'failed') {
                 const renderError = status.data.response.error || 'Shotstack internal rendering error';
@@ -515,7 +575,7 @@ async function startServer() {
       }
       
       // 4. Branded Template Render (Creatomate)
-      let finalVideoUrl = shotstackVideoUrl || aiImages[0];
+      if (!finalVideoUrl) finalVideoUrl = aiImages[0];
       if (creatomateKey && creatomateTemplate) {
         log('Node EDIT: Initializing Creatomate premium enhancement...', 5);
         try {
@@ -526,7 +586,7 @@ async function startServer() {
           
           job.data.scenes.forEach((scene: any, i: number) => {
             modifications[`Background-${i+1}.source`] = aiImages[i] || '';
-            modifications[`Text-${i+1}.text`] = scene.script_text || '';
+            modifications[`Text-${i+1}.text`] = (scene.script_text || '').replace(/<[^>]*>/g, '');
           });
 
           const creatomateRes = await axios.post('https://api.creatomate.com/v1/renders', {

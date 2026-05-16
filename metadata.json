@@ -2,5 +2,7 @@
   "name": "AI Reel Factory v2",
   "description": "Full-cycle Instagram Reels automation: Topic → Research → Script → Scene Plan → AI/Stock Media → Voiceover → Assembly → Publishing.",
   "requestFramePermissions": [],
-  "majorCapabilities": []
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

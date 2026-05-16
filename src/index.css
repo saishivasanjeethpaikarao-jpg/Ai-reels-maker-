@@ -74,6 +74,12 @@
   line-height: 1.6 !important;
 }
 
+.scene-script-editor .ql-editor {
+  @apply font-medium px-4 py-3 min-h-[120px];
+  font-size: 0.875rem !important;
+  text-transform: none !important;
+}
+
 /* Syntax Highlighting for Bold/Strong */
 .ql-editor strong, .ql-editor b {
   @apply text-sky-400 font-black;
@@ -106,7 +112,7 @@
 }
 
 .ql-editor.ql-blank::before {
-  @apply text-slate-800 font-bold italic;
+  @apply text-slate-600 font-bold italic;
   left: 1.5rem !important;
 }
 
@@ -167,4 +173,10 @@
 
 .ql-snow .ql-color-picker .ql-picker-options {
   width: 150px !important;
+}
+
+/* Premium Background Utilities */
+.mask-radial-fade {
+  mask-image: radial-gradient(circle at center, transparent 0%, rgba(0,0,0,1) 80%);
+  -webkit-mask-image: radial-gradient(circle at center, transparent 0%, rgba(0,0,0,1) 80%);
 }

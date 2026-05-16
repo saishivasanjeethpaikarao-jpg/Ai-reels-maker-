@@ -27,6 +27,7 @@ import {
   Lock,
   Plus,
   ArrowRight,
+  ArrowLeft,
   Pause,
   Volume2,
   VolumeX,
@@ -36,12 +37,22 @@ import {
   Upload,
   Trash2,
   FileVideo,
-  FileImage
+  FileImage,
+  Sparkles,
+  Wand2,
+  ArrowUp,
+  ArrowDown,
+  Clock,
+  Edit2,
+  Scissors
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { GoogleGenAI, Type } from '@google/genai';
+import { generateGeminiImage, generateGeminiVideo } from './services/geminiMediaService';
 import ReactQuill from 'react-quill-new';
 import 'react-quill-new/dist/quill.snow.css';
+import AnimatedBackground from './components/AnimatedBackground';
+import PersistentVideoPlayer from './components/PersistentVideoPlayer';
 
 // Initialize Gemini
 const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY || '' });
@@ -105,6 +116,9 @@ export default function App() {
   const [language, setLanguage] = useState('en-IN');
   const [resolution, setResolution] = useState('HD');
   const [aspectRatio, setAspectRatio] = useState('9:16');
+  const [style, setStyle] = useState('cinematic');
+  const [quality, setQuality] = useState('standard');
+  const [useMotion, setUseMotion] = useState(false);
   const [loading, setLoading] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [currentJob, setCurrentJob] = useState<Job | null>(null);
@@ -117,29 +131,14 @@ export default function App() {
   // New Strategy Phase State
   const [strategyResult, setStrategyResult] = useState<any>(null);
   const [selectedHookIndex, setSelectedHookIndex] = useState<number | null>(null);
+  const [finalScenes, setFinalScenes] = useState<any[] | null>(null);
+  const [generatingScenes, setGeneratingScenes] = useState<Record<number, boolean>>({});
+  const [suggestingBroll, setSuggestingBroll] = useState<Record<number, boolean>>({});
+  const [editingSceneIndex, setEditingSceneIndex] = useState<number | null>(null);
+  const [finalScript, setFinalScript] = useState<string>('');
 
   const [selectedJob, setSelectedJob] = useState<Job | null>(null);
-  const [videoMetadata, setVideoMetadata] = useState<{ resolution: string; aspect: string } | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
-
-  const handleVideoMetadata = (e: React.SyntheticEvent<HTMLVideoElement, Event>) => {
-    const video = e.currentTarget;
-    const width = video.videoWidth;
-    const height = video.videoHeight;
-    if (!width || !height) return;
-
-    const resolution = `${width}x${height}`;
-    const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
-    const divisor = gcd(width, height);
-    const aspect = `${width / divisor}:${height / divisor}`;
-    
-    setVideoMetadata({ resolution, aspect });
-  };
-
-  // Reset metadata when a new job becomes active or selected
-  useEffect(() => {
-    setVideoMetadata(null);
-  }, [activeJobId, selectedJob]);
 
   // Auto-scroll logs
   useEffect(() => {
@@ -168,6 +167,9 @@ export default function App() {
         if (draft.language) setLanguage(draft.language);
         if (draft.resolution) setResolution(draft.resolution);
         if (draft.aspectRatio) setAspectRatio(draft.aspectRatio);
+        if (draft.style) setStyle(draft.style);
+        if (draft.quality) setQuality(draft.quality);
+        if (draft.useMotion !== undefined) setUseMotion(draft.useMotion);
       } catch (e) {
         console.error("Failed to parse draft", e);
       }
@@ -181,8 +183,8 @@ export default function App() {
 
   // Auto-save draft whenever values change
   useEffect(() => {
-    localStorage.setItem('reelfactory_draft_v1', JSON.stringify({ topic, niche, language, resolution, aspectRatio, useManualScript }));
-  }, [topic, niche, language, resolution, aspectRatio, useManualScript]);
+    localStorage.setItem('reelfactory_draft_v1', JSON.stringify({ topic, niche, language, resolution, aspectRatio, useManualScript, style, quality, useMotion }));
+  }, [topic, niche, language, resolution, aspectRatio, useManualScript, style, quality, useMotion]);
 
   const saveKeys = (keys: typeof userKeys) => {
     setUserKeys(keys);
@@ -241,6 +243,30 @@ export default function App() {
     setUserAssets(next);
   };
 
+  const moveAsset = (index: number, direction: 'left' | 'right') => {
+    const next = [...userAssets];
+    const targetIndex = direction === 'left' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= next.length) return;
+    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+    setUserAssets(next);
+  };
+
+  const syncAssetsToScenes = () => {
+    if (!finalScenes || userAssets.length === 0) return;
+    const nextScenes = [...finalScenes];
+    userAssets.forEach((asset, idx) => {
+      if (nextScenes[idx]) {
+        nextScenes[idx] = {
+          ...nextScenes[idx],
+          assetUrl: asset.url,
+          assetType: asset.type
+        };
+      }
+    });
+    setFinalScenes(nextScenes);
+    setPhase('MEDIA: ASSETS SYNCHRONIZED TO TIMELINE');
+  };
+
   const runIntelligenceTask = async (prompt: string, schema: any) => {
     const provider = userKeys.llm_provider;
     if (provider === 'gemini') {
@@ -296,6 +322,7 @@ export default function App() {
         TOPIC: ${finalTopic}
         NICHE: ${niche}
         LANGUAGE: ${language}
+        VISUAL STYLE: ${style}
         
         GOAL: Maximum retention, watch time, and virality.
         RULES: Never sound robotic. Short punchy sentences. Curiosity loops.
@@ -337,16 +364,20 @@ export default function App() {
     if (!strategyResult || selectedHookIndex === null) return;
     
     setLoading(true);
-    setPhase('AI: ASSEMBLING SCENE INFRASTRUCTURE');
+    setPhase('AI: SYNCHRONIZING AGENT CLUSTERS');
     
     try {
+      setPhase('AI: ANALYZING HOOK POTENTIAL');
       const selectedHook = strategyResult.hooks[selectedHookIndex];
+      
+      setPhase('AI: MAPPING OPTICAL DIRECTIVES');
       // Use the selected hook to finalize the script and generate scenes
       const prompt = `Finalize the production directive based on the selected hook.
         SELECTED HOOK: ${selectedHook}
         BASE SCRIPT: ${strategyResult.script}
         NICHE: ${niche}
         LANGUAGE: ${language}
+        VISUAL STYLE: ${style}
         
         Task:
         1. Fully integrate the hook into the start of the script.
@@ -374,21 +405,127 @@ export default function App() {
       });
       
       setPhase('NODE: INITIALIZING CLOUD SYNC');
+      
+      const scenesWithDefaults = finalDirective.scenes.map((s: any, idx: number) => ({
+        ...s,
+        duration: 5,
+        assetUrl: userAssets[idx]?.url || null,
+        assetType: userAssets[idx]?.type || 'image',
+        transitionIn: 'fade',
+        transitionOut: 'fade',
+        broll_suggestion: ''
+      }));
+
+      setFinalScenes(scenesWithDefaults);
+      setFinalScript(finalDirective.final_script);
+      setPhase('AWAITING_SCENE_CLEARANCE');
+    } catch (e: any) {
+      console.error("Finalization Node Error:", e);
+      setPhase(`FAULT: ${e.message.toUpperCase()}`);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGenerateSceneAsset = async (index: number) => {
+    if (!finalScenes) return;
+    const scene = finalScenes[index];
+    const geminiKey = userKeys.gemini_key || process.env.GEMINI_API_KEY;
+    if (!geminiKey) {
+      setPhase('FAULT: GEMINI KEY REQUIRED FOR ASSET SYNTHESIS');
+      return;
+    }
+
+    setGeneratingScenes(prev => ({ ...prev, [index]: true }));
+    try {
+      const prompt = `A ${style} style scene. ${scene.image_prompt}. ultra-high fidelity, 8k resolution, cinematic lighting.`;
+      let assetUrl = '';
+      let assetType = useMotion ? 'video' : 'image';
+
+      if (useMotion) {
+        try {
+          assetUrl = await generateGeminiVideo(geminiKey, prompt, aspectRatio);
+        } catch (vidError) {
+          console.error("Video synthesis failed, falling back to image:", vidError);
+          assetType = 'image';
+          assetUrl = await generateGeminiImage(geminiKey, prompt, aspectRatio, quality);
+        }
+      } else {
+        assetUrl = await generateGeminiImage(geminiKey, prompt, aspectRatio, quality);
+      }
+
+      updateScene(index, { assetUrl, assetType });
+    } catch (e: any) {
+      console.error("Asset Synthesis Error:", e);
+    } finally {
+      setGeneratingScenes(prev => ({ ...prev, [index]: false }));
+    }
+  };
+
+  const handleGenerateAllAssets = async () => {
+    if (!finalScenes) return;
+    for (let i = 0; i < finalScenes.length; i++) {
+      if (!finalScenes[i].assetUrl) {
+        await handleGenerateSceneAsset(i);
+      }
+    }
+  };
+
+  const moveScene = (index: number, direction: 'up' | 'down') => {
+    if (!finalScenes) return;
+    const newScenes = [...finalScenes];
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= newScenes.length) return;
+
+    [newScenes[index], newScenes[targetIndex]] = [newScenes[targetIndex], newScenes[index]];
+    setFinalScenes(newScenes);
+  };
+
+  const handleStartFinalSynthentis = async () => {
+    if (!finalScenes || !finalScript) return;
+    
+    setLoading(true);
+    setPhase('AI: SYNCHRONIZING AGENT CLUSTERS');
+    
+    try {
+      // Ensure all assets are generated
+      const scenesToProcess = [...finalScenes];
+      const geminiKey = userKeys.gemini_key || process.env.GEMINI_API_KEY;
+
+      for (let i = 0; i < scenesToProcess.length; i++) {
+        if (!scenesToProcess[i].assetUrl && geminiKey) {
+          setPhase(`AI: SYNTHESIZING ASSET ${i+1}/${scenesToProcess.length}`);
+          const prompt = `A ${style} style scene. ${scenesToProcess[i].image_prompt}. ultra-high fidelity, 8k resolution, cinematic lighting.`;
+          try {
+            if (useMotion) {
+              scenesToProcess[i].assetUrl = await generateGeminiVideo(geminiKey, prompt, aspectRatio);
+              scenesToProcess[i].assetType = 'video';
+            } else {
+              scenesToProcess[i].assetUrl = await generateGeminiImage(geminiKey, prompt, aspectRatio, quality);
+              scenesToProcess[i].assetType = 'image';
+            }
+          } catch (e) {
+            console.error(`Asset generation failed for scene ${i+1}`, e);
+          }
+        }
+      }
+
       const res = await fetch('/api/generate-media', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
-          topic: finalDirective.final_script, 
+          topic: finalScript, 
           niche, 
           language,
           resolution,
           aspectRatio,
+          style,
+          quality,
           keys: userKeys,
-          user_assets: userAssets,
-          scenes: finalDirective.scenes,
-          script: finalDirective.final_script,
-          viral_metadata: { ...strategyResult.metadata, retention_analysis: strategyResult.retention_analysis },
-          hooks: strategyResult.hooks
+          scenes: scenesToProcess,
+          script: finalScript,
+          viral_metadata: { ...strategyResult?.metadata, retention_analysis: strategyResult?.retention_analysis },
+          hooks: strategyResult?.hooks || []
         })
       });
       
@@ -400,11 +537,12 @@ export default function App() {
       const data = await res.json();
       if (data.jobId) {
         setActiveJobId(data.jobId);
-        setStrategyResult(null); // Clear strategy to show processing view
+        setStrategyResult(null); 
+        setFinalScenes(null);
         pollJob(data.jobId);
       }
     } catch (e: any) {
-      console.error("Finalization Node Error:", e);
+      console.error("Synthesis Start Error:", e);
       setPhase(`FAULT: ${e.message.toUpperCase()}`);
     } finally {
       setLoading(false);
@@ -449,12 +587,44 @@ export default function App() {
     }
   };
 
+  const updateScene = (index: number, updates: any) => {
+    if (!finalScenes) return;
+    const next = [...finalScenes];
+    next[index] = { ...next[index], ...updates };
+    setFinalScenes(next);
+  };
+
+  const handleSuggestBroll = async (index: number) => {
+    if (!finalScenes || editingSceneIndex === null) return;
+    const scene = finalScenes[index];
+    setSuggestingBroll(prev => ({ ...prev, [index]: true }));
+    try {
+      const response = await fetch('/api/gemini/suggest-broll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          script_text: scene.script_text,
+          image_prompt: scene.image_prompt
+        })
+      });
+      const data = await response.json();
+      if (data.suggestion) {
+        updateScene(index, { broll_suggestion: data.suggestion });
+      }
+    } catch (e) {
+      console.error('Failed to suggest broll', e);
+    } finally {
+      setSuggestingBroll(prev => ({ ...prev, [index]: false }));
+    }
+  };
+
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text);
   };
 
   return (
-    <div className="min-h-screen bg-[#020617] selection:bg-sky-500/30 overflow-x-hidden text-slate-300 font-sans">
+    <div className="min-h-screen selection:bg-sky-500/30 overflow-x-hidden text-slate-200 font-sans relative">
+      <AnimatedBackground loading={loading || !!activeJobId} />
       {/* HUD Navigation */}
       <nav className="fixed top-0 inset-x-0 h-20 border-b border-white/5 glass-panel !rounded-none z-[60] px-8 flex justify-between items-center transition-all duration-500 backdrop-blur-2xl">
          <div className="flex items-center gap-12">
@@ -464,27 +634,56 @@ export default function App() {
                </div>
                <div className="hidden md:block">
                   <h1 className="text-xl font-black italic tracking-tighter text-white leading-none">REELFACTORY</h1>
-                  <span className="text-[9px] font-bold text-slate-600 uppercase tracking-[0.4em]">Autonomous AI Lab</span>
+                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-[0.4em]">Autonomous AI Lab</span>
                </div>
             </div>
 
-            <div className="flex items-center gap-2 bg-slate-950/50 p-1.5 rounded-2xl border border-white/5">
-                {['Create', 'History', 'Settings'].map((tab) => (
-                  <button
-                    key={tab}
-                    onClick={() => setActiveTab(tab.toLowerCase() as any)}
-                    className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeTab === tab.toLowerCase() ? 'bg-sky-500 text-slate-950 shadow-xl scale-105' : 'text-slate-500 hover:text-slate-300'}`}
-                  >
-                    {tab}
-                  </button>
-                ))}
+            <div className="flex items-center gap-2 bg-slate-950/50 p-1.5 rounded-2xl border border-white/5 relative">
+                {['Create', 'History', 'Settings'].map((tab) => {
+                  const isTabActive = activeTab === tab.toLowerCase();
+                  const isCreateTab = tab.toLowerCase() === 'create';
+                  const isPulseActive = isCreateTab && (loading || !!activeJobId);
+                  
+                  return (
+                    <motion.button
+                      key={tab}
+                      onClick={() => setActiveTab(tab.toLowerCase() as any)}
+                      animate={isPulseActive ? {
+                        scale: isTabActive ? [1.05, 1.1, 1.05] : [1, 1.05, 1],
+                        backgroundColor: isPulseActive ? ["rgba(14, 165, 233, 0.2)", "rgba(14, 165, 233, 0.4)", "rgba(14, 165, 233, 0.2)"] : undefined
+                      } : {}}
+                      transition={{ 
+                        repeat: Infinity, 
+                        duration: 1.5,
+                        ease: "easeInOut"
+                      }}
+                      className={`px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-colors relative z-10 ${isTabActive ? 'text-slate-950' : 'text-slate-400 hover:text-slate-300'}`}
+                    >
+                      {isTabActive && (
+                        <motion.div 
+                          layoutId="nav-bg"
+                          className="absolute inset-0 bg-sky-500 rounded-xl -z-10 shadow-[0_0_20px_rgba(14,165,233,0.4)]"
+                          transition={{ type: "spring", bounce: 0.2, duration: 0.6 }}
+                        />
+                      )}
+                      {isPulseActive && (
+                        <motion.div 
+                          className="absolute inset-0 bg-white/10 rounded-xl"
+                          animate={{ opacity: [0, 0.3, 0] }}
+                          transition={{ repeat: Infinity, duration: 1.5 }}
+                        />
+                      )}
+                      {tab}
+                    </motion.button>
+                  );
+                })}
             </div>
          </div>
 
          <div className="flex items-center gap-6">
             <div className="hidden lg:flex flex-col items-end gap-1">
-               <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Global Latency</div>
-               <div className="text-xs font-mono font-bold text-sky-400">0.42ms <span className="text-[8px] text-slate-700">/ SYNCED</span></div>
+               <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Global Latency</div>
+               <div className="text-xs font-mono font-bold text-sky-400">0.42ms <span className="text-[8px] text-slate-400">/ SYNCED</span></div>
             </div>
             <div className="w-px h-8 bg-white/5" />
             <div className="flex items-center gap-3 px-4 py-2 rounded-full bg-emerald-500/5 border border-emerald-500/20">
@@ -516,7 +715,19 @@ export default function App() {
                   <section className="glass-panel p-10 neo-shadow space-y-10 border-2 border-white/5">
                      <div className="space-y-6">
                         <div className="flex justify-between items-center">
-                           <div className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">Media Arsenal</div>
+                           <div className="flex items-center gap-3">
+                              <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Media Arsenal</div>
+                              {userAssets.length > 1 && (
+                                 <button 
+                                    onClick={syncAssetsToScenes}
+                                    disabled={!finalScenes}
+                                    title="Prioritize these assets in the timeline"
+                                    className="px-2 py-1 bg-sky-500/10 border border-sky-500/30 rounded-lg text-[7px] font-black text-sky-400 uppercase tracking-widest hover:bg-sky-500 hover:text-slate-950 transition-all disabled:opacity-30 disabled:pointer-events-none"
+                                 >
+                                    Priority Sync
+                                 </button>
+                              )}
+                           </div>
                            <div className="text-[8px] font-mono text-sky-500/50 uppercase">{userAssets.length} / 5 ASSETS</div>
                         </div>
                         
@@ -528,17 +739,36 @@ export default function App() {
                                  ) : (
                                     <img src={asset.url} className="w-full h-full object-cover opacity-50" />
                                  )}
-                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/60 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <p className="text-[8px] font-bold text-white uppercase tracking-tighter line-clamp-1 px-2 mb-2">{asset.name}</p>
-                                    <button 
-                                      onClick={() => removeAsset(idx)}
-                                      className="p-2 bg-rose-500/20 text-rose-500 rounded-lg hover:bg-rose-500 transition-colors"
-                                    >
-                                       <Trash2 className="w-3 h-3" />
-                                    </button>
+                                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-950/60 opacity-0 group-hover:opacity-100 transition-opacity gap-2">
+                                    <p className="text-[8px] font-bold text-white uppercase tracking-tighter line-clamp-1 px-2">{asset.name}</p>
+                                    <div className="flex gap-2">
+                                       {idx > 0 && (
+                                          <button 
+                                             onClick={() => moveAsset(idx, 'left')}
+                                             className="p-1.5 bg-sky-500/20 text-sky-400 rounded-lg hover:bg-sky-500 hover:text-slate-950 transition-all"
+                                          >
+                                             <ArrowLeft className="w-3 h-3" />
+                                          </button>
+                                       )}
+                                       {idx < userAssets.length - 1 && (
+                                          <button 
+                                             onClick={() => moveAsset(idx, 'right')}
+                                             className="p-1.5 bg-sky-500/20 text-sky-400 rounded-lg hover:bg-sky-500 hover:text-slate-950 transition-all"
+                                          >
+                                             <ArrowRight className="w-3 h-3" />
+                                          </button>
+                                       )}
+                                       <button 
+                                         onClick={() => removeAsset(idx)}
+                                         className="p-1.5 bg-rose-500/20 text-rose-500 rounded-lg hover:bg-rose-500 transition-colors"
+                                       >
+                                          <Trash2 className="w-3 h-3" />
+                                       </button>
+                                    </div>
                                  </div>
-                                 <div className="absolute top-2 left-2">
+                                 <div className="absolute top-2 left-2 flex items-center gap-2">
                                     {asset.type === 'video' ? <FileVideo className="w-3 h-3 text-sky-500" /> : <FileImage className="w-3 h-3 text-emerald-500" />}
+                                    <span className="text-[8px] font-black text-white/40">#{idx + 1}</span>
                                  </div>
                               </div>
                            ))}
@@ -551,9 +781,9 @@ export default function App() {
                                  ) : (
                                     <>
                                        <div className="p-3 bg-white/5 rounded-xl border border-white/5 group-hover:scale-110 transition-transform">
-                                          <Upload className="w-5 h-5 text-slate-700 group-hover:text-sky-500" />
+                                          <Upload className="w-5 h-5 text-slate-500 group-hover:text-sky-500" />
                                        </div>
-                                       <span className="text-[8px] font-black text-slate-600 uppercase tracking-widest mt-3 group-hover:text-sky-400">Deploy Assets</span>
+                                       <span className="text-[8px] font-black text-slate-400 uppercase tracking-widest mt-3 group-hover:text-sky-400">Deploy Assets</span>
                                     </>
                                  )}
                               </label>
@@ -572,21 +802,64 @@ export default function App() {
                      <div className="w-full h-px bg-white/5" />
 
                      <form onSubmit={handleStart} className="space-y-10">
+                        <div className="grid grid-cols-2 gap-6">
+                           <div className="space-y-4">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Visual Style</label>
+                              <select 
+                                 value={style}
+                                 onChange={e => setStyle(e.target.value)}
+                                 className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-4 text-white uppercase text-[10px] font-black tracking-widest outline-none focus:border-sky-500 transition-all cursor-pointer"
+                              >
+                                 <option value="cinematic">Cinematic</option>
+                                 <option value="photorealistic">Photorealistic</option>
+                                 <option value="anime">Anime / Manga</option>
+                                 <option value="digital-art">Digital Art</option>
+                                 <option value="3d-render">3D Render</option>
+                                 <option value="cyberpunk">Cyberpunk</option>
+                                 <option value="minimalist">Minimalist</option>
+                              </select>
+                           </div>
+                           <div className="space-y-4">
+                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">AI Fidelity</label>
+                              <select 
+                                 value={quality}
+                                 onChange={e => setQuality(e.target.value)}
+                                 className="w-full bg-slate-950 border border-slate-800 rounded-2xl px-4 py-4 text-white uppercase text-[10px] font-black tracking-widest outline-none focus:border-sky-500 transition-all cursor-pointer"
+                              >
+                                 <option value="standard">Standard (Fast)</option>
+                                 <option value="high">High Fidelity (Pro)</option>
+                                 <option value="ultra">Ultra 4K (Elite)</option>
+                              </select>
+                           </div>
+                        </div>
+
+                        <div className="flex items-center justify-between p-6 bg-sky-500/5 border border-sky-500/10 rounded-2xl group cursor-pointer hover:bg-sky-500/10 transition-all" onClick={() => setUseMotion(!useMotion)}>
+                           <div className="space-y-1">
+                              <div className="text-[10px] font-black text-white uppercase tracking-widest flex items-center gap-2">
+                                 <Video className="w-3 h-3 text-sky-400" />
+                                 Cinematic Motion
+                              </div>
+                              <div className="text-[10px] font-medium text-slate-400 uppercase tracking-tight">Generate dynamic video backgrounds per scene</div>
+                           </div>
+                           <div className={`w-10 h-5 rounded-full p-1 transition-all ${useMotion ? 'bg-sky-500' : 'bg-slate-800'}`}>
+                              <div className={`w-3 h-3 bg-white rounded-full transition-all ${useMotion ? 'translate-x-5' : 'translate-x-0'}`} />
+                           </div>
+                        </div>
                         <div className="space-y-8">
                            <div className="space-y-4">
-                              <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em] flex justify-between items-center">
+                               <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] flex justify-between items-center">
                                  <div className="flex items-center gap-2">
                                     <span>Script Brain Command</span>
                                     <button 
                                       type="button"
                                       onClick={() => setUseManualScript(!useManualScript)}
-                                      className={`px-2 py-0.5 rounded border text-[7px] transition-all ${useManualScript ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'bg-slate-950 border-slate-800 text-slate-700'}`}
+                                      className={`px-2 py-0.5 rounded border text-[7px] transition-all ${useManualScript ? 'bg-sky-500/20 border-sky-500 text-sky-400' : 'bg-slate-950 border-slate-700 text-slate-500'}`}
                                     >
                                        {useManualScript ? 'MANUAL_OVERRIDE' : 'TOPIC_MODE'}
                                     </button>
                                  </div>
                                  <div className="flex items-center gap-4">
-                                    <span className="text-slate-700">WORDS: {topic.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').split(/\s+/).filter(Boolean).length}</span>
+                                    <span className="text-slate-400">WORDS: {topic.replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').split(/\s+/).filter(Boolean).length}</span>
                                     <span className="text-sky-500 opacity-50">[RT_STREAM]</span>
                                  </div>
                               </label>
@@ -613,7 +886,7 @@ export default function App() {
 
                            <div className="grid grid-cols-2 gap-6">
                               <div className="space-y-4">
-                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">Niche Cluster</label>
+                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Niche Cluster</label>
                                  <select 
                                     value={niche}
                                     onChange={e => setNiche(e.target.value)}
@@ -626,7 +899,7 @@ export default function App() {
                                  </select>
                               </div>
                               <div className="space-y-4">
-                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">Speech Protocol</label>
+                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Speech Protocol</label>
                                  <select 
                                     value={language}
                                     onChange={e => setLanguage(e.target.value)}
@@ -641,7 +914,7 @@ export default function App() {
 
                            <div className="grid grid-cols-2 gap-6">
                               <div className="space-y-4">
-                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">Res Matrix</label>
+                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Res Matrix</label>
                                  <select 
                                     value={resolution}
                                     onChange={e => setResolution(e.target.value)}
@@ -652,7 +925,7 @@ export default function App() {
                                  </select>
                               </div>
                               <div className="space-y-4">
-                                 <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.3em]">Optic Ratio</label>
+                                 <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Optic Ratio</label>
                                  <select 
                                     value={aspectRatio}
                                     onChange={e => setAspectRatio(e.target.value)}
@@ -669,7 +942,7 @@ export default function App() {
                         <button 
                            type="submit"
                            disabled={loading || !!activeJobId}
-                           className={`w-full py-6 rounded-[2rem] font-black text-xs uppercase tracking-[0.5em] transition-all flex items-center justify-center gap-4 group cyber-button ${loading ? 'bg-slate-800 text-slate-600' : 'bg-sky-500 text-slate-950 shadow-[0_20px_50px_-10px_rgba(14,165,233,0.6)]'}`}
+                           className={`w-full py-6 rounded-[2rem] font-black text-xs uppercase tracking-[0.5em] transition-all flex items-center justify-center gap-4 group cyber-button ${loading ? 'bg-slate-800 text-slate-400' : 'bg-sky-500 text-slate-950 shadow-[0_20px_50px_-10px_rgba(14,165,233,0.6)]'}`}
                         >
                            {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Play className="w-5 h-5 fill-current" />}
                            <span>{loading ? 'Synthesizing Node' : 'Initialize Cycle'}</span>
@@ -683,21 +956,65 @@ export default function App() {
                   <header className="flex justify-between items-end">
                      <div className="space-y-1">
                         <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">Live Process Projection</h2>
-                        <p className="text-[10px] font-mono text-slate-600 uppercase tracking-widest">Real-time visualization of cloud orchestration.</p>
+                        <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Real-time visualization of cloud orchestration.</p>
                      </div>
                      {currentJob && (
                         <div className="text-right">
                            <div className="text-3xl font-mono font-black text-sky-500 tracking-tighter leading-none">{currentJob.progress}%</div>
-                           <span className="text-[10px] font-bold text-slate-800 uppercase tracking-widest">Completion Index</span>
+                           <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Completion Index</span>
                         </div>
                      )}
                   </header>
 
-                  <div className="flex-1 glass-panel neo-shadow p-2 min-h-[600px] flex overflow-hidden border-2 border-white/5 transition-all">
+                  <div className="flex-1 glass-panel neo-shadow p-2 min-h-[600px] flex overflow-hidden border-2 border-white/5 transition-all relative">
+                     <AnimatePresence>
+                        {loading && (
+                           <motion.div 
+                              initial={{ opacity: 0 }}
+                              animate={{ opacity: 1 }}
+                              exit={{ opacity: 0 }}
+                              className="absolute inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex flex-col items-center justify-center space-y-12 rounded-[1.8rem]"
+                           >
+                              <div className="relative">
+                                 <motion.div 
+                                    animate={{ 
+                                       rotate: 360,
+                                       scale: [1, 1.1, 1],
+                                       boxShadow: ["0 0 20px rgba(14,165,233,0.2)", "0 0 50px rgba(14,165,233,0.4)", "0 0 20px rgba(14,165,233,0.2)"]
+                                    }}
+                                    transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
+                                    className="w-32 h-32 border-2 border-sky-500/30 rounded-full flex items-center justify-center"
+                                 >
+                                    <BrainCircuit className="w-12 h-12 text-sky-500" />
+                                 </motion.div>
+                                 <motion.div 
+                                    animate={{ scale: [1, 1.2, 1], opacity: [0.5, 1, 0.5] }}
+                                    transition={{ duration: 2, repeat: Infinity }}
+                                    className="absolute inset-0 bg-sky-500/20 rounded-full blur-2xl"
+                                 />
+                              </div>
+                              <div className="text-center space-y-4">
+                                 <h3 className="text-2xl font-black italic text-white uppercase tracking-tighter">{phase || 'Synthesizing Automation Cluster'}</h3>
+                                 <div className="flex gap-2 justify-center">
+                                    {[0, 1, 2].map(i => (
+                                       <motion.div 
+                                          key={i}
+                                          animate={{ scale: [1, 1.5, 1], opacity: [0.3, 1, 0.3] }}
+                                          transition={{ duration: 1, repeat: Infinity, delay: i * 0.2 }}
+                                          className="w-2 h-2 bg-sky-500 rounded-full shadow-[0_0_10px_rgba(14,165,233,0.5)]"
+                                       />
+                                    ))}
+                                 </div>
+                              </div>
+                           </motion.div>
+                        )}
+                     
                      {strategyResult ? (
                         <motion.div 
-                           initial={{ opacity: 0, y: 20 }}
-                           animate={{ opacity: 1, y: 0 }}
+                           key="strategy-result"
+                           initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                           animate={{ opacity: 1, scale: 1, y: 0 }}
+                           exit={{ opacity: 0, scale: 1.02, y: -10 }}
                            className="flex-1 bg-slate-950 rounded-[1.8rem] flex flex-col relative overflow-hidden p-10 space-y-10"
                         >
                            <div className="flex justify-between items-start">
@@ -706,14 +1023,14 @@ export default function App() {
                                     <BrainCircuit className="w-6 h-6 text-sky-500" />
                                     <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Hook Evolution Lab</h3>
                                  </div>
-                                 <p className="text-[10px] font-mono text-slate-500 uppercase tracking-widest">Neural agents have synthesized 5 diverse entry points.</p>
+                                 <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Neural agents have synthesized 5 diverse entry points.</p>
                               </div>
                               <div className="px-4 py-2 bg-sky-500/10 border border-sky-500/20 rounded-full text-[9px] font-black text-sky-400 uppercase tracking-widest">Awaiting Directive</div>
                            </div>
 
                            <div className="grid grid-cols-1 md:grid-cols-2 gap-10 flex-1 overflow-hidden">
                               <div className="space-y-6 overflow-y-auto custom-scrollbar pr-4">
-                                 <div className="text-[10px] font-black text-slate-600 uppercase tracking-widest flex items-center gap-2">
+                                 <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
                                     <Zap className="w-4 h-4 text-sky-500" />
                                     Viral Hook Variations
                                  </div>
@@ -725,7 +1042,7 @@ export default function App() {
                                           className={`w-full text-left p-6 rounded-3xl border-2 transition-all duration-300 relative group ${selectedHookIndex === idx ? 'bg-sky-500/10 border-sky-500 shadow-[0_0_30px_-10px_rgba(14,165,233,0.3)]' : 'bg-white/2 border-white/5 hover:border-white/10'}`}
                                        >
                                           <div className="flex gap-4">
-                                             <span className={`text-lg font-black italic tracking-tighter transition-colors ${selectedHookIndex === idx ? 'text-sky-400' : 'text-slate-800'}`}>0{idx + 1}</span>
+                                             <span className={`text-lg font-black italic tracking-tighter transition-colors ${selectedHookIndex === idx ? 'text-sky-400' : 'text-slate-400'}`}>0{idx + 1}</span>
                                              <p className={`text-sm font-medium leading-relaxed ${selectedHookIndex === idx ? 'text-white' : 'text-slate-400'}`}>{hook}</p>
                                           </div>
                                           {selectedHookIndex === idx && (
@@ -750,8 +1067,8 @@ export default function App() {
                                  </div>
 
                                  <div className="flex-1 space-y-4">
-                                    <div className="text-[10px] font-black text-slate-600 uppercase tracking-widest">Baseline Narrative</div>
-                                    <div className="bg-slate-900/50 p-6 rounded-3xl border border-white/5 font-mono text-[10px] text-slate-500 leading-relaxed uppercase">
+                                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Baseline Narrative</div>
+                                    <div className="bg-slate-900/50 p-6 rounded-3xl border border-white/5 font-mono text-[10px] text-slate-400 leading-relaxed uppercase">
                                        {strategyResult.script.substring(0, 300)}...
                                     </div>
                                  </div>
@@ -760,14 +1077,14 @@ export default function App() {
                                     <button 
                                        onClick={handleFinalizeGeneration}
                                        disabled={selectedHookIndex === null || loading}
-                                       className={`w-full py-6 rounded-[2rem] font-black text-xs uppercase tracking-[0.5em] transition-all flex items-center justify-center gap-4 cyber-button ${selectedHookIndex === null || loading ? 'bg-slate-800 text-slate-600' : 'bg-emerald-500 text-slate-950 shadow-[0_20px_50px_-10px_rgba(16,185,129,0.5)]'}`}
+                                       className={`w-full py-6 rounded-[2rem] font-black text-xs uppercase tracking-[0.5em] transition-all flex items-center justify-center gap-4 cyber-button ${selectedHookIndex === null || loading ? 'bg-slate-800 text-slate-400' : 'bg-emerald-500 text-slate-950 shadow-[0_20px_50px_-10px_rgba(16,185,129,0.5)]'}`}
                                     >
                                        {loading ? <RefreshCw className="w-5 h-5 animate-spin" /> : <Rocket className="w-5 h-5" />}
                                        <span>{loading ? 'Synthesizing Node' : 'Finalize & Render'}</span>
                                     </button>
                                     <button 
                                        onClick={handleStart}
-                                       className="w-full text-[10px] font-black text-slate-600 uppercase tracking-widest hover:text-sky-500 transition-colors flex items-center justify-center gap-2"
+                                       className="w-full text-[10px] font-black text-slate-400 uppercase tracking-widest hover:text-sky-500 transition-colors flex items-center justify-center gap-2"
                                     >
                                        <RefreshCw className="w-3 h-3" />
                                        Regenerate Strategy Cycles
@@ -776,15 +1093,308 @@ export default function App() {
                               </div>
                            </div>
                         </motion.div>
+                     ) : finalScenes ? (
+                        <motion.div 
+                           key="scene-review"
+                           initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                           animate={{ opacity: 1, scale: 1, y: 0 }}
+                           exit={{ opacity: 0, scale: 1.02, y: -10 }}
+                           className="flex-1 bg-slate-950 rounded-[1.8rem] flex flex-col relative overflow-hidden p-10 space-y-8"
+                        >
+                           <div className="flex justify-between items-start">
+                              <div className="space-y-2">
+                                 <div className="flex items-center gap-3">
+                                    <Layers className="w-6 h-6 text-sky-500" />
+                                    <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Optical Narrative Assembly</h3>
+                                 </div>
+                                 <p className="text-[10px] font-mono text-slate-400 uppercase tracking-widest">Review and refine the scene-by-scene directive before deep-core synthesis.</p>
+                              </div>
+                              <div className="flex gap-4">
+                                 <button
+                                    onClick={handleGenerateAllAssets}
+                                    className="px-6 py-2 bg-sky-500/10 border border-sky-500/30 rounded-xl text-[10px] font-black text-sky-400 uppercase tracking-widest hover:bg-sky-500/20 transition-all flex items-center gap-2"
+                                 >
+                                    <Sparkles className="w-3 h-3" />
+                                    Synthesize All Previews
+                                 </button>
+                                 <div className="px-4 py-2 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-[9px] font-black text-emerald-400 uppercase tracking-widest flex items-center gap-2">
+                                    <ShieldCheck className="w-3 h-3" />
+                                    HUMAN_CLEARANCE_REQUIRED
+                                 </div>
+                              </div>
+                           </div>
+
+                           <div className="flex-1 overflow-y-auto custom-scrollbar pr-4 space-y-6">
+                              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                                 {finalScenes.map((scene, idx) => (
+                                    <motion.div
+                                       key={idx}
+                                       layout
+                                       className="bg-white/2 border border-white/5 p-6 rounded-3xl hover:border-sky-500/30 transition-all group relative overflow-hidden flex flex-col gap-4"
+                                    >
+                                       <div className="flex justify-between items-start z-10">
+                                          <div className="flex flex-col gap-1">
+                                             <div className="text-[10px] font-black text-sky-500 uppercase tracking-tighter">Timeline Index // 0{idx + 1}</div>
+                                             <div className="flex gap-1">
+                                               {idx > 0 && (
+                                                 <button onClick={() => moveScene(idx, 'up')} className="p-1.5 bg-slate-950/50 rounded-lg hover:bg-sky-500 hover:text-slate-950 transition-all">
+                                                   <ArrowUp className="w-3 h-3" />
+                                                 </button>
+                                               )}
+                                               {idx < finalScenes.length - 1 && (
+                                                 <button onClick={() => moveScene(idx, 'down')} className="p-1.5 bg-slate-950/50 rounded-lg hover:bg-sky-500 hover:text-slate-950 transition-all">
+                                                   <ArrowDown className="w-3 h-3" />
+                                                 </button>
+                                               )}
+                                             </div>
+                                          </div>
+                                          <div className="flex gap-2">
+                                             <div className="flex items-center gap-2 bg-slate-950/50 px-3 py-1.5 rounded-xl border border-white/5">
+                                                <Clock className="w-3 h-3 text-amber-500" />
+                                                <input 
+                                                   type="number" 
+                                                   value={scene.duration} 
+                                                   onChange={e => updateScene(idx, { duration: parseInt(e.target.value) || 5 })}
+                                                   className="bg-transparent border-none outline-none text-[10px] font-bold text-white w-6 text-center"
+                                                />
+                                                <span className="text-[8px] font-black text-slate-500 uppercase">SEC</span>
+                                             </div>
+                                             <button 
+                                               onClick={() => setEditingSceneIndex(idx)}
+                                               className="p-2 bg-white/5 rounded-xl hover:bg-sky-500 hover:text-slate-950 transition-all"
+                                             >
+                                               <Edit2 className="w-3 h-3" />
+                                             </button>
+                                          </div>
+                                       </div>
+
+                                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 relative z-10">
+                                          <div className="aspect-video bg-slate-950 rounded-2xl overflow-hidden border border-white/5 relative group/media">
+                                             {scene.assetUrl ? (
+                                                scene.assetType === 'video' ? (
+                                                   <video src={scene.assetUrl} autoPlay loop muted playsInline className="w-full h-full object-cover" />
+                                                ) : (
+                                                   <img src={scene.assetUrl} className="w-full h-full object-cover" />
+                                                )
+                                             ) : (
+                                                <div className="w-full h-full flex flex-col items-center justify-center space-y-2 text-slate-700">
+                                                   {generatingScenes[idx] ? (
+                                                      <RefreshCw className="w-8 h-8 animate-spin text-sky-500" />
+                                                   ) : (
+                                                      <>
+                                                         <Video className="w-8 h-8 opacity-20" />
+                                                         <span className="text-[8px] font-black uppercase tracking-widest opacity-50">Media Void</span>
+                                                      </>
+                                                   )}
+                                                </div>
+                                             )}
+                                             
+                                             <div className="absolute inset-0 bg-slate-950/60 opacity-0 group-hover/media:opacity-100 transition-opacity flex items-center justify-center gap-4">
+                                                <button 
+                                                   onClick={() => handleGenerateSceneAsset(idx)}
+                                                   className="p-3 bg-sky-500 text-slate-950 rounded-xl hover:scale-110 transition-transform shadow-lg shadow-sky-500/20"
+                                                >
+                                                   <RefreshCw className={`w-4 h-4 ${generatingScenes[idx] ? 'animate-spin' : ''}`} />
+                                                </button>
+                                             </div>
+                                          </div>
+
+                                          <div className="space-y-3">
+                                             <div className="space-y-1">
+                                                <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                                                   <Terminal className="w-3 h-3 text-emerald-500" />
+                                                   Script Matrix
+                                                </div>
+                                                <p className="text-[10px] text-white font-medium leading-relaxed italic uppercase line-clamp-2">"{scene.script_text?.replace(/<[^>]*>/g, '')}"</p>
+                                             </div>
+                                             <div className="space-y-1">
+                                                <div className="text-[8px] font-black text-slate-500 uppercase tracking-widest flex items-center gap-1.5">
+                                                   <ImageIcon className="w-3 h-3 text-sky-500" />
+                                                   Visual Prompt
+                                                </div>
+                                                <p className="text-[9px] text-slate-500 leading-tight line-clamp-2 italic">{scene.image_prompt}</p>
+                                             </div>
+                                             <div className="flex gap-2">
+                                                <div className="px-2 py-1 bg-slate-950/30 rounded-lg border border-white/5 text-[7px] font-black text-slate-500 uppercase tracking-tighter">
+                                                  IN: {scene.transitionIn || 'FADE'}
+                                                </div>
+                                                <div className="px-2 py-1 bg-slate-950/30 rounded-lg border border-white/5 text-[7px] font-black text-slate-500 uppercase tracking-tighter">
+                                                  OUT: {scene.transitionOut || 'FADE'}
+                                                </div>
+                                             </div>
+                                          </div>
+                                       </div>
+
+                                       <div className="absolute bottom-0 right-0 p-3 opacity-5 pointer-events-none">
+                                          <Cpu className="w-16 h-16 text-sky-500" />
+                                       </div>
+                                    </motion.div>
+                                 ))}
+                              </div>
+                           </div>
+
+                           <AnimatePresence>
+                              {editingSceneIndex !== null && (
+                                 <motion.div
+                                    initial={{ opacity: 0, scale: 0.95 }}
+                                    animate={{ opacity: 1, scale: 1 }}
+                                    exit={{ opacity: 0, scale: 0.95 }}
+                                    className="fixed inset-0 z-[110] flex items-center justify-center p-6"
+                                 >
+                                    <div className="absolute inset-0 bg-slate-950/80 backdrop-blur-md" onClick={() => setEditingSceneIndex(null)} />
+                                    <div className="w-full max-w-2xl bg-slate-950 border border-white/10 rounded-[2rem] p-10 space-y-8 relative z-10 neo-shadow">
+                                       <header className="flex justify-between items-center">
+                                          <div className="space-y-1">
+                                             <div className="text-[10px] font-black text-sky-500 uppercase tracking-widest">Scene Refinement Node</div>
+                                             <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Edit Directive 0{editingSceneIndex + 1}</h3>
+                                          </div>
+                                          <button onClick={() => setEditingSceneIndex(null)} className="w-10 h-10 rounded-xl bg-white/5 flex items-center justify-center text-slate-500 hover:bg-sky-500 hover:text-slate-950 transition-all">
+                                             <Plus className="w-6 h-6 rotate-45" />
+                                          </button>
+                                       </header>
+
+                                       <div className="space-y-6">
+                                          <div className="space-y-3">
+                                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Neural Script Content</label>
+                                             <div className="quill-container bg-black/40 border border-white/5 rounded-2xl overflow-hidden focus-within:border-sky-500 transition-all">
+                                                <ReactQuill 
+                                                   theme="snow"
+                                                   value={finalScenes[editingSceneIndex].script_text}
+                                                   onChange={value => updateScene(editingSceneIndex, { script_text: value })}
+                                                   modules={{
+                                                      toolbar: [
+                                                         ['bold', 'italic', 'underline'],
+                                                         ['clean']
+                                                      ],
+                                                   }}
+                                                   className="scene-script-editor"
+                                                />
+                                             </div>
+                                          </div>
+                                          <div className="space-y-3">
+                                             <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Visual Matrix Blueprint (Image Prompt)</label>
+                                             <textarea 
+                                                value={finalScenes[editingSceneIndex].image_prompt}
+                                                onChange={e => updateScene(editingSceneIndex, { image_prompt: e.target.value })}
+                                                className="w-full bg-black/40 border border-white/5 rounded-2xl p-6 text-xs text-slate-300 focus:border-sky-500 outline-none transition-all min-h-[100px]"
+                                             />
+                                          </div>
+
+                                          <div className="space-y-4">
+                                            <div className="flex justify-between items-center">
+                                              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Kinetic Overlay (B-Roll)</label>
+                                              <button 
+                                                 onClick={() => handleSuggestBroll(editingSceneIndex)}
+                                                 disabled={suggestingBroll[editingSceneIndex]}
+                                                 className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-lg text-[8px] font-black text-amber-400 uppercase tracking-widest hover:bg-amber-500 hover:text-slate-950 transition-all disabled:opacity-30"
+                                              >
+                                                 {suggestingBroll[editingSceneIndex] ? (
+                                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                                 ) : (
+                                                    <RefreshCw className="w-3 h-3" />
+                                                 )}
+                                                 {suggestingBroll[editingSceneIndex] ? 'Directing...' : 'Regenerate'}
+                                              </button>
+                                            </div>
+                                            <div className="relative">
+                                              <input 
+                                                type="text"
+                                                value={finalScenes[editingSceneIndex].broll_suggestion || ''}
+                                                onChange={(e) => updateScene(editingSceneIndex, { broll_suggestion: e.target.value })}
+                                                className="w-full bg-black/40 border border-white/5 rounded-2xl pl-6 pr-12 py-4 text-white text-xs font-bold italic uppercase outline-none focus:border-sky-500 transition-all"
+                                                placeholder="E.G. AETHERIAL PARTICLES DRIFTING..."
+                                              />
+                                              <div className="absolute right-4 top-1/2 -translate-y-1/2 opacity-20">
+                                                <Sparkles className="w-4 h-4 text-amber-500" />
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          <div className="grid grid-cols-2 gap-4">
+                                             <div className="space-y-3">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Entry Transition</label>
+                                                <select 
+                                                   value={finalScenes[editingSceneIndex].transitionIn || 'fade'}
+                                                   onChange={e => updateScene(editingSceneIndex, { transitionIn: e.target.value })}
+                                                   className="w-full bg-black/40 border border-white/5 rounded-xl p-3 text-[10px] font-bold text-white focus:border-sky-500 outline-none transition-all uppercase"
+                                                >
+                                                   <option value="fade">Fade</option>
+                                                   <option value="wipeLeft">Wipe Left</option>
+                                                   <option value="wipeRight">Wipe Right</option>
+                                                   <option value="slideLeft">Slide Left</option>
+                                                   <option value="slideRight">Slide Right</option>
+                                                   <option value="slideUp">Slide Up</option>
+                                                   <option value="slideDown">Slide Down</option>
+                                                   <option value="zoomIn">Zoom In</option>
+                                                   <option value="zoomOut">Zoom Out</option>
+                                                </select>
+                                             </div>
+                                             <div className="space-y-3">
+                                                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Exit Transition</label>
+                                                <select 
+                                                   value={finalScenes[editingSceneIndex].transitionOut || 'fade'}
+                                                   onChange={e => updateScene(editingSceneIndex, { transitionOut: e.target.value })}
+                                                   className="w-full bg-black/40 border border-white/5 rounded-xl p-3 text-[10px] font-bold text-white focus:border-sky-500 outline-none transition-all uppercase"
+                                                >
+                                                   <option value="fade">Fade</option>
+                                                   <option value="wipeLeft">Wipe Left</option>
+                                                   <option value="wipeRight">Wipe Right</option>
+                                                   <option value="slideLeft">Slide Left</option>
+                                                   <option value="slideRight">Slide Right</option>
+                                                   <option value="slideUp">Slide Up</option>
+                                                   <option value="slideDown">Slide Down</option>
+                                                   <option value="zoomIn">Zoom In</option>
+                                                   <option value="zoomOut">Zoom Out</option>
+                                                </select>
+                                             </div>
+                                          </div>
+                                       </div>
+
+                                       <button 
+                                          onClick={() => {
+                                             handleGenerateSceneAsset(editingSceneIndex);
+                                             setEditingSceneIndex(null);
+                                          }}
+                                          className="w-full py-5 bg-sky-500 text-slate-950 rounded-3xl font-black text-xs uppercase tracking-[0.4em] shadow-lg shadow-sky-500/20"
+                                       >
+                                          Apply & Synthesize Preview
+                                       </button>
+                                    </div>
+                                 </motion.div>
+                              )}
+                           </AnimatePresence>
+
+                           <div className="pt-8 border-t border-white/5 flex gap-4">
+                              <button 
+                                 onClick={() => { setFinalScenes(null); setPhase('SYNTHESIS_ABORTED'); }}
+                                 className="px-8 py-5 border border-white/10 rounded-3xl text-[10px] font-black uppercase tracking-widest text-slate-500 hover:text-white hover:bg-white/5 transition-all"
+                              >
+                                 Abort Mission
+                              </button>
+                              <button 
+                                 onClick={handleStartFinalSynthentis}
+                                 className="flex-1 py-5 bg-sky-500 text-slate-950 rounded-3xl font-black text-[11px] uppercase tracking-[0.4em] flex items-center justify-center gap-4 cyber-button shadow-[0_20px_50px_-10px_rgba(14,165,233,0.5)]"
+                              >
+                                 <CheckCircle2 className="w-5 h-5 fill-current" />
+                                 Commit & Start Synthesis
+                              </button>
+                           </div>
+                        </motion.div>
                      ) : currentJob ? (
-                        <div className="flex-1 bg-slate-950 rounded-[1.8rem] flex flex-col relative overflow-hidden">
+                        <motion.div 
+                           key="active-job"
+                           initial={{ opacity: 0, scale: 0.98, y: 10 }}
+                           animate={{ opacity: 1, scale: 1, y: 0 }}
+                           exit={{ opacity: 0, scale: 1.02, y: -10 }}
+                           className="flex-1 bg-slate-950 rounded-[1.8rem] flex flex-col relative overflow-hidden"
+                        >
                            <div className="p-10 border-b border-white/5 flex justify-between items-center">
                               <div className="flex items-center gap-4">
                                  <div className={`p-4 rounded-2xl bg-white/5 border border-white/10 ${currentJob.status === 'completed' ? 'text-emerald-500' : 'text-sky-500 animate-pulse'}`}>
                                     <Activity className="w-6 h-6" />
                                  </div>
                                  <div>
-                                    <div className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em] mb-1">Process Node // {currentJob.id}</div>
+                                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em] mb-1">Process Node // {currentJob.id}</div>
                                     <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">
                                        {currentJob.status === 'processing' && 'Synthesizing Assets...'}
                                        {currentJob.status === 'awaiting_approval' && 'Pending Clearance'}
@@ -796,7 +1406,7 @@ export default function App() {
                               </div>
                               <div className="flex gap-2">
                                  {['CPU', 'IMG', 'VOX', 'EDIT', 'IG'].map((node, i) => (
-                                    <div key={node} className={`px-3 py-1 rounded-md text-[8px] font-black tracking-[0.2em] border transition-all ${currentJob.status === 'failed' ? 'bg-rose-500/10 border-rose-500/50 text-rose-500' : currentJob.progress > (node === 'IG' ? 95 : i * 20) ? 'bg-sky-500/10 border-sky-500/50 text-sky-400 opacity-100' : 'bg-slate-950 border-white/5 text-slate-800 opacity-50'}`}>
+                                    <div key={node} className={`px-3 py-1 rounded-md text-[8px] font-black tracking-[0.2em] border transition-all ${currentJob.status === 'failed' ? 'bg-rose-500/10 border-rose-500/50 text-rose-500' : currentJob.progress > (node === 'IG' ? 95 : i * 20) ? 'bg-sky-500/10 border-sky-500/50 text-sky-400 opacity-100' : 'bg-slate-950 border-white/5 text-slate-400 opacity-50'}`}>
                                        {node}
                                     </div>
                                  ))}
@@ -808,26 +1418,9 @@ export default function App() {
                                  <div className="flex-1 bg-slate-900 shadow-inner rounded-3xl overflow-hidden border border-white/5 relative group">
                                     {currentJob.result?.videoUrl ? (
                                        <div className="w-full h-full flex flex-col">
-                                          <VideoPlayer 
+                                          <PersistentVideoPlayer 
                                              src={currentJob.result.videoUrl} 
-                                             onMetadata={handleVideoMetadata}
                                           />
-                                          {videoMetadata && (
-                                            <div className="bg-slate-950/80 backdrop-blur-md px-6 py-3 border-t border-white/5 flex justify-between items-center animate-in fade-in slide-in-from-bottom-2 duration-500">
-                                               <div className="flex items-center gap-4">
-                                                  <div className="flex flex-col">
-                                                     <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Dimension</span>
-                                                     <span className="text-[10px] font-mono font-bold text-sky-400">{videoMetadata.resolution}</span>
-                                                  </div>
-                                                  <div className="w-px h-6 bg-white/5" />
-                                                  <div className="flex flex-col">
-                                                     <span className="text-[8px] font-black text-slate-500 uppercase tracking-widest">Aspect</span>
-                                                     <span className="text-[10px] font-mono font-bold text-emerald-400">{videoMetadata.aspect}</span>
-                                                  </div>
-                                               </div>
-                                               <div className="px-2 py-1 bg-sky-500/10 border border-sky-500/20 rounded text-[7px] font-black text-sky-500 uppercase tracking-widest">Technical Master</div>
-                                            </div>
-                                          )}
                                        </div>
                                     ) : (
                                        <div className="h-full flex items-center justify-center text-slate-900">
@@ -847,14 +1440,25 @@ export default function App() {
                                        >
                                           Authorize Transmission
                                        </button>
-                                       <p className="text-[10px] text-center font-bold text-slate-600 uppercase tracking-widest italic">Awaiting Secure Link Handshake to Instagram</p>
+                                       <p className="text-[10px] text-center font-bold text-slate-400 uppercase tracking-widest italic">Awaiting Secure Link Handshake to Instagram</p>
                                     </div>
                                  )}
                               </div>
 
                               <div className="space-y-8 flex flex-col max-h-full">
                                  <div className="space-y-4">
-                                    <div className="text-[10px] font-black text-slate-600 uppercase tracking-[0.3em]">Active Cycle Progress</div>
+                                    <div className="flex justify-between items-end">
+                                       <div className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Active Cycle Progress</div>
+                                       <div className="text-[10px] font-black text-sky-500 uppercase tracking-widest">{currentJob.progress}%</div>
+                                    </div>
+                                    <div className="h-1.5 w-full bg-slate-900 rounded-full overflow-hidden border border-white/5">
+                                       <motion.div 
+                                          initial={{ width: 0 }}
+                                          animate={{ width: `${currentJob.progress}%` }}
+                                          transition={{ duration: 0.8, ease: "easeOut" }}
+                                          className="h-full bg-sky-500 shadow-[0_0_15px_rgba(14,165,233,0.5)]"
+                                       />
+                                    </div>
                                     <div className="grid grid-cols-5 gap-3">
                                        {[
                                          { id: 'CPU', icon: <Terminal className="w-4 h-4" /> },
@@ -866,7 +1470,7 @@ export default function App() {
                                          const isActive = currentJob.logs.slice().reverse().find(l => l.includes(`Node ${step.id}`)) || (idx === 0 && currentJob.status === 'processing');
                                          const isDone = currentJob.progress > (idx + 1) * 20;
                                          return (
-                                           <div key={step.id} className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all duration-500 ${isActive ? 'bg-sky-500/10 border-sky-500/50 text-sky-400 scale-105 shadow-lg shadow-sky-500/10' : isDone ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-500' : 'bg-slate-950 border-white/5 text-slate-800'}`}>
+                                           <div key={step.id} className={`p-4 rounded-2xl border flex flex-col items-center gap-2 transition-all duration-500 ${isActive ? 'bg-sky-500/10 border-sky-500/50 text-sky-400 scale-105 shadow-lg shadow-sky-500/10' : isDone ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-500' : 'bg-slate-950 border-white/5 text-slate-500'}`}>
                                               {step.icon}
                                               <span className="text-[8px] font-black uppercase tracking-tighter">{step.id}</span>
                                            </div>
@@ -876,15 +1480,36 @@ export default function App() {
                                  </div>
 
                                  <div className="flex-1 space-y-4 flex flex-col min-h-0">
-                                    <div className="text-[10px] font-black text-slate-600 uppercase tracking-[0.3em] flex justify-between">
+                                    <div className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em] flex justify-between">
                                        Neural Logs
                                        <span className="text-sky-500 animate-pulse">SYSTEM_ACTIVE</span>
                                     </div>
+                                    
+                                    {currentJob.status === 'processing' && (
+                                      <div className="p-4 bg-sky-500/5 border border-sky-500/20 rounded-2xl flex items-center justify-between group overflow-hidden relative">
+                                         <div className="flex items-center gap-4 z-10">
+                                            <div className="p-2 bg-sky-500/20 rounded-lg">
+                                               <RefreshCw className="w-3 h-3 text-sky-400 animate-spin" />
+                                            </div>
+                                            <div className="space-y-1">
+                                               <div className="text-[8px] font-black text-sky-400 uppercase tracking-widest">Active Thread</div>
+                                               <div className="text-[10px] font-bold text-white uppercase tracking-tight truncate max-w-[200px]">
+                                                  {currentJob.logs.length > 0 ? (currentJob.logs[currentJob.logs.length - 1].split('] ')[1] || 'Orchestrating...').substring(0, 40) + '...' : 'Initializing...'}
+                                               </div>
+                                            </div>
+                                         </div>
+                                         <motion.div 
+                                            animate={{ x: ['-100%', '200%'] }}
+                                            transition={{ duration: 2, repeat: Infinity, ease: "linear" }}
+                                            className="absolute inset-0 bg-gradient-to-r from-transparent via-sky-500/10 to-transparent skew-x-12"
+                                         />
+                                      </div>
+                                    )}
                                     <div className="flex-1 bg-slate-950 border border-white/5 rounded-3xl p-8 font-mono text-[10px] space-y-3 overflow-y-auto custom-scrollbar shadow-inner">
                                        {currentJob.logs.map((log, i) => (
                                           <div key={i} className="flex gap-4 group">
-                                             <span className="text-slate-800 shrink-0 select-none">[{log.match(/\[(.*?)\]/)?.[1]?.split('T')[1].split('.')[0] || i}]</span>
-                                             <span className={`transition-colors uppercase leading-relaxed ${log.includes('Error') || log.includes('failed') ? 'text-rose-400' : 'text-slate-500 group-hover:text-sky-300'}`}>
+                                             <span className="text-slate-500 shrink-0 select-none">[{log.match(/\[(.*?)\]/)?.[1]?.split('T')[1].split('.')[0] || i}]</span>
+                                             <span className={`transition-colors uppercase leading-relaxed ${log.includes('Error') || log.includes('failed') ? 'text-rose-400' : 'text-slate-400 group-hover:text-sky-300'}`}>
                                                 {log.split('] ')[1] || log}
                                              </span>
                                           </div>
@@ -921,11 +1546,11 @@ export default function App() {
                                             <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Strategic Metadata</div>
                                             <div className="space-y-4">
                                                <div className="space-y-1">
-                                                  <div className="text-[8px] font-bold text-slate-600 uppercase">Caption Matrix</div>
+                                                  <div className="text-[8px] font-bold text-slate-400 uppercase">Caption Matrix</div>
                                                   <p className="text-[10px] text-slate-400 line-clamp-3">{currentJob.result.viral_metadata.caption}</p>
                                                </div>
                                                <div className="space-y-1">
-                                                  <div className="text-[8px] font-bold text-slate-600 uppercase">Natural CTA</div>
+                                                  <div className="text-[8px] font-bold text-slate-400 uppercase">Natural CTA</div>
                                                   <p className="text-[10px] text-sky-400 font-black italic">{currentJob.result.viral_metadata.cta}</p>
                                                </div>
                                                <div className="flex flex-wrap gap-2 pt-2">
@@ -942,7 +1567,7 @@ export default function App() {
                                                   <div key={i} className="text-[9px] group border-b border-white/5 pb-2 last:border-0 hover:bg-white/2 p-1 rounded transition-all">
                                                      <div className="flex justify-between items-center mb-1">
                                                         <span className="text-emerald-500 font-black tracking-tighter uppercase">Scene {i+1}</span>
-                                                        <span className="text-[7px] text-slate-700 tracking-widest uppercase">B-ROLL</span>
+                                                        <span className="text-[7px] text-slate-400 tracking-widest uppercase">B-ROLL</span>
                                                      </div>
                                                      <p className="font-medium group-hover:text-emerald-400 transition-colors uppercase italic leading-tight">{scene.broll_suggestion}</p>
                                                   </div>
@@ -966,31 +1591,45 @@ export default function App() {
                                  </div>
                               </div>
                            </div>
-                        </div>
+                        </motion.div>
                      ) : (
-                        <div className="flex-1 flex flex-col items-center justify-center p-20 space-y-8 text-center border-dashed border-4 border-white/5 rounded-[2.5rem]">
-                           <div className="w-24 h-24 rounded-[2rem] bg-slate-950 border border-white/5 flex items-center justify-center text-slate-900">
-                              <Terminal className="w-10 h-10" />
+                        <motion.div 
+                           key="empty-state"
+                           initial={{ opacity: 0 }}
+                           animate={{ opacity: 1 }}
+                           exit={{ opacity: 0 }}
+                           className="flex-1 flex flex-col items-center justify-center p-20 space-y-8 text-center border-dashed border-4 border-white/5 rounded-[2.5rem]"
+                        >
+                           <div className="w-24 h-24 rounded-[2rem] bg-slate-950 border border-white/5 flex items-center justify-center text-slate-400 shadow-[0_0_20px_rgba(14,165,233,0.1)]">
+                              <Sparkles className="w-10 h-10" />
                            </div>
                            <div className="space-y-2">
                               <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">System Idle Matrix</h3>
-                              <p className="text-slate-600 font-mono text-[10px] uppercase tracking-widest max-w-sm mx-auto leading-loose">
+                              <p className="text-slate-400 font-mono text-[10px] uppercase tracking-widest max-w-sm mx-auto leading-loose">
                                  Currently awaiting directive handshake. Initialize orchestrator mission to project neural activity into this void.
                               </p>
                            </div>
-                        </div>
+                        </motion.div>
                      )}
-                  </div>
+                  </AnimatePresence>
                </div>
-            </motion.div>
-          )}
+            </div>
+         </motion.div>
+      )}
 
           {activeTab === 'history' && (
-             <motion.div key="history" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-16">
+             <motion.div 
+               key="history" 
+               initial={{ opacity: 0, x: 20 }} 
+               animate={{ opacity: 1, x: 0 }} 
+               exit={{ opacity: 0, x: -20 }}
+               transition={{ duration: 0.4 }}
+               className="space-y-16"
+             >
                 <header className="flex justify-between items-end border-b border-white/5 pb-10">
                    <div className="space-y-2">
                       <h2 className="text-5xl font-extrabold italic text-white uppercase tracking-tighter leading-none">Job<span className="text-sky-500">Archives</span></h2>
-                      <p className="text-slate-500 font-mono text-[10px] uppercase tracking-widest">Repository of previously synthesized automation clusters.</p>
+                      <p className="text-slate-400 font-mono text-[10px] uppercase tracking-widest">Repository of previously synthesized automation clusters.</p>
                    </div>
                    <button onClick={fetchHistory} className="w-16 h-16 glass-panel flex items-center justify-center hover:bg-white/10 transition-all border-2 border-white/5 neo-shadow shadow-sky-500/10">
                       <RefreshCw className="w-6 h-6 text-sky-500" />
@@ -998,9 +1637,12 @@ export default function App() {
                 </header>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-10">
-                   {history.map(job => (
-                      <div 
+                   {history.map((job, idx) => (
+                      <motion.div 
                         key={job.id} 
+                        initial={{ opacity: 0, y: 30 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: idx * 0.05, duration: 0.5, ease: "easeOut" }}
                         onClick={() => setSelectedJob(job)}
                         className="glass-panel group relative overflow-hidden transition-all duration-700 hover:-translate-y-2 hover:scale-105 neo-shadow border-2 border-white/5 hover:border-sky-500/30 cursor-pointer"
                       >
@@ -1014,12 +1656,12 @@ export default function App() {
                             )}
                             <div className="absolute inset-x-0 bottom-0 p-8 pt-20 bg-gradient-to-t from-[#020617] via-[#020617]/80 to-transparent">
                                <div className={`px-2 py-1 rounded text-[7px] font-black uppercase tracking-[0.3em] inline-block mb-4 border ${job.status === 'completed' ? 'border-emerald-500/30 text-emerald-500 bg-emerald-500/10' : job.status === 'failed' ? 'border-rose-500/30 text-rose-500 bg-rose-500/10' : 'border-sky-500/30 text-sky-500 bg-sky-500/10 animate-pulse'}`}>
-                                  {job.status}
+                                  {job.status === 'processing' ? `SYNTHESIZING ${job.progress}%` : job.status}
                                </div>
                                <h4 className="text-lg font-black text-white italic line-clamp-2 uppercase tracking-tighter leading-tight group-hover:text-sky-400 transition-colors">{job.data.topic || 'Untitled Workflow'}</h4>
                             </div>
                          </div>
-                      </div>
+                      </motion.div>
                    ))}
                 </div>
 
@@ -1088,7 +1730,7 @@ export default function App() {
                                           <div className="bg-slate-950/30 p-4 rounded-2xl border border-white/5">
                                              <div className="flex items-center gap-2 mb-2">
                                                 <BrainCircuit className="w-3 h-3 text-sky-400" />
-                                                <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Psychology & Retention Analysis</span>
+                                                <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Psychology & Retention Analysis</span>
                                              </div>
                                              <p className="text-[11px] text-slate-400 leading-relaxed font-medium italic">
                                                 "{selectedJob.result.viral_metadata.retention_analysis}"
@@ -1098,7 +1740,7 @@ export default function App() {
 
                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
                                           <div className="space-y-4">
-                                             <div className="text-[9px] font-black text-slate-500 uppercase tracking-widest">Psychological Hooks</div>
+                                             <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Psychological Hooks</div>
                                              <div className="space-y-2">
                                                 {selectedJob.result.hooks?.map((hook: string, i: number) => (
                                                    <div key={i} className="text-[10px] text-slate-300 bg-slate-950 border border-white/5 p-3 rounded-xl flex gap-3">
@@ -1128,7 +1770,7 @@ export default function App() {
                                                             </div>
                                                          </div>
                                                          <p className="text-[9px] text-slate-400 italic leading-tight border-l border-white/10 pl-2">
-                                                            <span className="text-slate-600 font-bold mr-1">B-ROLL:</span>
+                                                            <span className="text-slate-400 font-bold mr-1">B-ROLL:</span>
                                                             {scene.broll_suggestion}
                                                          </p>
                                                       </div>
@@ -1157,7 +1799,7 @@ export default function App() {
                                      <div className="bg-slate-900/50 border border-white/5 rounded-3xl p-8 font-mono text-[11px] space-y-4">
                                         {selectedJob.logs.map((log, i) => (
                                           <div key={i} className="flex gap-6 group border-b border-white/2 pb-3 last:border-0 last:pb-0">
-                                             <span className="text-slate-800 shrink-0 select-none">[{log.match(/\[(.*?)\]/)?.[1]?.split('T')[1].split('.')[0] || i}]</span>
+                                             <span className="text-slate-500 shrink-0 select-none">[{log.match(/\[(.*?)\]/)?.[1]?.split('T')[1].split('.')[0] || i}]</span>
                                              <span className={`transition-colors uppercase leading-relaxed ${log.includes('Error') || log.includes('failed') ? 'text-rose-400' : 'text-slate-400 group-hover:text-sky-300'}`}>
                                                 {log.split('] ')[1] || log}
                                              </span>
@@ -1168,11 +1810,11 @@ export default function App() {
 
                                   <div className="grid grid-cols-2 gap-6">
                                      <div className="p-6 bg-white/2 rounded-2xl border border-white/5 space-y-2">
-                                        <div className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Niche Cluster</div>
+                                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Niche Cluster</div>
                                         <div className="text-white text-xs font-bold uppercase tracking-tighter">{selectedJob.data.niche}</div>
                                      </div>
                                      <div className="p-6 bg-white/2 rounded-2xl border border-white/5 space-y-2">
-                                        <div className="text-[9px] font-black text-slate-600 uppercase tracking-widest">Speech Protocol</div>
+                                        <div className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Speech Protocol</div>
                                         <div className="text-white text-xs font-bold uppercase tracking-tighter">{selectedJob.data.language}</div>
                                      </div>
                                   </div>
@@ -1181,24 +1823,9 @@ export default function App() {
                                <div className="lg:w-[400px] bg-white/2 border-l border-white/5 p-8 space-y-8 overflow-y-auto">
                                   <div className="aspect-[9/16] bg-slate-950 rounded-3xl border border-white/10 overflow-hidden relative shadow-2xl flex flex-col">
                                      {selectedJob.result?.videoUrl ? (
-                                        <>
-                                           <VideoPlayer 
-                                              src={selectedJob.result.videoUrl} 
-                                              onMetadata={handleVideoMetadata}
-                                           />
-                                           {videoMetadata && (
-                                             <div className="bg-slate-950 px-6 py-4 border-t border-white/5 flex gap-6 animate-in slide-in-from-bottom-1 duration-500">
-                                                <div className="flex flex-col">
-                                                   <span className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Res</span>
-                                                   <span className="text-[9px] font-mono font-bold text-sky-400">{videoMetadata.resolution}</span>
-                                                </div>
-                                                <div className="flex flex-col">
-                                                   <span className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Ratio</span>
-                                                   <span className="text-[9px] font-mono font-bold text-emerald-400">{videoMetadata.aspect}</span>
-                                                </div>
-                                             </div>
-                                           )}
-                                        </>
+                                        <PersistentVideoPlayer 
+                                           src={selectedJob.result.videoUrl} 
+                                        />
                                      ) : (
                                         <div className="h-full flex items-center justify-center text-slate-900">
                                            <Video className="w-16 h-16" />
@@ -1242,7 +1869,14 @@ export default function App() {
           )}
 
           {activeTab === 'settings' && (
-             <motion.div key="settings" initial={{ opacity: 0, scale: 0.98 }} animate={{ opacity: 1, scale: 1 }} className="max-w-6xl space-y-12">
+             <motion.div 
+               key="settings" 
+               initial={{ opacity: 0, x: 20 }} 
+               animate={{ opacity: 1, x: 0 }} 
+               exit={{ opacity: 0, x: -20 }}
+               transition={{ duration: 0.4 }}
+               className="max-w-6xl space-y-12"
+             >
                 <header className="flex flex-col md:flex-row md:items-end justify-between gap-6 border-b border-white/5 pb-10">
                    <div>
                       <h2 className="text-6xl font-black italic text-white uppercase tracking-tighter leading-none">Security<span className="text-sky-500">Node</span></h2>
@@ -1253,11 +1887,11 @@ export default function App() {
                    </div>
                    <div className="flex gap-4">
                       <div className="px-6 py-3 bg-white/2 border border-white/5 rounded-2xl flex flex-col items-center">
-                         <span className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Storage Status</span>
+                         <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest">Storage Status</span>
                          <span className="text-[10px] font-black text-emerald-500 uppercase">LocalStorage Encrypted</span>
                       </div>
                       <div className="px-6 py-3 bg-white/2 border border-white/5 rounded-2xl flex flex-col items-center">
-                         <span className="text-[7px] font-black text-slate-600 uppercase tracking-widest">Active Region</span>
+                         <span className="text-[7px] font-black text-slate-400 uppercase tracking-widest">Active Region</span>
                          <span className="text-[10px] font-black text-sky-500 uppercase">Global Node 01</span>
                       </div>
                    </div>
@@ -1275,6 +1909,13 @@ export default function App() {
                                <Cpu className="w-5 h-5 text-sky-500" />
                             </div>
                             <h3 className="text-xl font-black text-white italic uppercase tracking-tight">Intelligence Matrix</h3>
+                            <button 
+                               onClick={() => (window as any).aistudio?.openSelectKey()}
+                               className="absolute top-10 right-10 flex items-center gap-2 px-6 py-3 bg-sky-500/10 border border-sky-500/20 rounded-2xl hover:bg-sky-500/20 transition-all z-20 group"
+                            >
+                               <Sparkles className="w-4 h-4 text-sky-400 group-hover:scale-110 transition-transform" />
+                               <span className="text-[10px] font-black text-sky-400 uppercase tracking-widest">Authorize Ultra Mode</span>
+                            </button>
                          </div>
                          
                          <div className="space-y-8 relative z-10">
@@ -1285,7 +1926,7 @@ export default function App() {
                                      <button 
                                         key={p} 
                                         onClick={() => saveKeys({...userKeys, llm_provider: p} as any)}
-                                        className={`py-4 rounded-2xl border text-[9px] font-black uppercase tracking-widest transition-all ${userKeys.llm_provider === p ? 'bg-sky-500 text-slate-950 border-sky-500 shadow-[0_15px_30px_-10px_rgba(14,165,233,0.5)]' : 'bg-slate-950/50 text-slate-600 border-white/5 hover:border-white/10'}`}
+                                        className={`py-4 rounded-2xl border text-[9px] font-black uppercase tracking-widest transition-all ${userKeys.llm_provider === p ? 'bg-sky-500 text-slate-950 border-sky-500 shadow-[0_15px_30px_-10px_rgba(14,165,233,0.5)]' : 'bg-slate-950/50 text-slate-400 border-white/5 hover:border-white/10'}`}
                                      >
                                         {p}
                                      </button>
@@ -1320,7 +1961,7 @@ export default function App() {
                                      <button 
                                         key={p} 
                                         onClick={() => saveKeys({...userKeys, image_provider: p} as any)}
-                                        className={`py-4 rounded-2xl border text-[9px] font-black uppercase tracking-widest transition-all ${userKeys.image_provider === p ? 'bg-emerald-500 text-slate-950 border-emerald-500 shadow-[0_15px_30px_-10px_rgba(16,185,129,0.5)]' : 'bg-slate-950/50 text-slate-600 border-white/5 hover:border-white/10'}`}
+                                        className={`py-4 rounded-2xl border text-[9px] font-black uppercase tracking-widest transition-all ${userKeys.image_provider === p ? 'bg-emerald-500 text-slate-950 border-emerald-500 shadow-[0_15px_30px_-10px_rgba(16,185,129,0.5)]' : 'bg-slate-950/50 text-slate-400 border-white/5 hover:border-white/10'}`}
                                      >
                                         {p.replace('_', ' ')}
                                      </button>
@@ -1346,7 +1987,7 @@ export default function App() {
                                   <button 
                                      key={p} 
                                      onClick={() => saveKeys({...userKeys, voice_provider: p} as any)}
-                                     className={`flex-1 py-3 rounded-xl border text-[8px] font-black uppercase tracking-widest transition-all ${userKeys.voice_provider === p ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-lg shadow-amber-500/20' : 'bg-slate-950 text-slate-600 border-white/5'}`}
+                                     className={`flex-1 py-3 rounded-xl border text-[8px] font-black uppercase tracking-widest transition-all ${userKeys.voice_provider === p ? 'bg-amber-500 text-slate-950 border-amber-500 shadow-lg shadow-amber-500/20' : 'bg-slate-950 text-slate-400 border-white/5'}`}
                                   >
                                      {p.replace('_', ' ')}
                                   </button>
@@ -1400,14 +2041,120 @@ export default function App() {
              </motion.div>
           )}
         </AnimatePresence>
+
+        {/* Scene Editor Modal */}
+        <AnimatePresence>
+          {editingSceneIndex !== null && finalScenes && (
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[110] flex items-center justify-center p-4 md:p-10"
+            >
+              <div className="absolute inset-0 bg-slate-950/90 backdrop-blur-3xl" onClick={() => setEditingSceneIndex(null)} />
+              <motion.div 
+                initial={{ scale: 0.9, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.9, y: 20 }}
+                className="w-full max-w-2xl bg-slate-950 border border-white/10 rounded-[2.5rem] overflow-hidden flex flex-col relative z-10 shadow-2xl"
+              >
+                <div className="p-8 border-b border-white/5 flex justify-between items-center bg-white/2">
+                  <div className="flex items-center gap-6">
+                    <div className="w-12 h-12 rounded-2xl flex items-center justify-center border bg-sky-500/10 border-sky-500/50 text-sky-500">
+                      <Layers className="w-6 h-6" />
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em] mb-1">Directive Override // Scene 0{editingSceneIndex + 1}</div>
+                      <h3 className="text-2xl font-black text-white italic uppercase tracking-tighter">Micro-Orchestration</h3>
+                    </div>
+                  </div>
+                  <button 
+                    onClick={() => setEditingSceneIndex(null)}
+                    className="w-12 h-12 rounded-2xl bg-white/5 hover:bg-white/10 flex items-center justify-center text-slate-500 transition-all"
+                  >
+                    <Plus className="w-6 h-6 rotate-45" />
+                  </button>
+                </div>
+
+                <div className="p-10 space-y-8 overflow-y-auto max-h-[70vh] custom-scrollbar">
+                  <div className="space-y-4">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Script Narrative</label>
+                    <div className="quill-container bg-slate-900 border border-white/5 rounded-2xl overflow-hidden focus-within:border-sky-500 transition-all">
+                      <ReactQuill 
+                        theme="snow"
+                        value={finalScenes[editingSceneIndex].script_text}
+                        onChange={value => updateScene(editingSceneIndex, { script_text: value })}
+                        modules={{
+                          toolbar: [
+                            ['bold', 'italic', 'underline'],
+                            ['clean']
+                          ],
+                        }}
+                        className="scene-script-editor"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-4">
+                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Optical Directive (Image Prompt)</label>
+                    <textarea 
+                      value={finalScenes[editingSceneIndex].image_prompt}
+                      onChange={(e) => updateScene(editingSceneIndex, { image_prompt: e.target.value })}
+                      className="w-full bg-slate-900 border border-white/5 rounded-2xl p-6 text-white text-xs font-mono leading-relaxed outline-none focus:border-emerald-500 transition-all min-h-[100px] resize-none text-emerald-400"
+                    />
+                  </div>
+
+                  <div className="space-y-4">
+                    <div className="flex justify-between items-center">
+                      <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.3em]">Kinetic Overlay (B-Roll)</label>
+                      <button 
+                         onClick={() => handleSuggestBroll(editingSceneIndex)}
+                         disabled={suggestingBroll[editingSceneIndex]}
+                         className="flex items-center gap-2 px-3 py-1.5 bg-amber-500/10 border border-amber-500/30 rounded-lg text-[8px] font-black text-amber-400 uppercase tracking-widest hover:bg-amber-500 hover:text-slate-950 transition-all disabled:opacity-30"
+                      >
+                         {suggestingBroll[editingSceneIndex] ? (
+                            <Loader2 className="w-3 h-3 animate-spin" />
+                         ) : (
+                            <RefreshCw className="w-3 h-3" />
+                         )}
+                         {suggestingBroll[editingSceneIndex] ? 'Directing...' : 'Regenerate AI'}
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <input 
+                        type="text"
+                        value={finalScenes[editingSceneIndex].broll_suggestion}
+                        onChange={(e) => updateScene(editingSceneIndex, { broll_suggestion: e.target.value })}
+                        className="w-full bg-slate-900 border border-white/5 rounded-2xl pl-6 pr-12 py-4 text-white text-xs font-bold italic uppercase outline-none focus:border-amber-500 transition-all"
+                        placeholder="E.G. AETHERIAL PARTICLES DRIFTING..."
+                      />
+                      <div className="absolute right-4 top-1/2 -translate-y-1/2 opacity-20">
+                        <Sparkles className="w-4 h-4 text-amber-500" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-8 border-t border-white/5 bg-white/2">
+                  <button 
+                    onClick={() => setEditingSceneIndex(null)}
+                    className="w-full py-5 bg-sky-500 text-slate-950 rounded-2xl font-black text-[10px] uppercase tracking-widest shadow-lg shadow-sky-500/20"
+                  >
+                    Save Local Changes
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </main>
 
-      <footer className="max-w-7xl mx-auto px-8 py-12 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-10 text-slate-700">
+      <footer className="max-w-7xl mx-auto px-8 py-12 border-t border-white/5 flex flex-col md:flex-row justify-between items-center gap-10 text-slate-500">
          <div className="text-[9px] font-black uppercase tracking-[0.6em] flex items-center gap-4">
             <Zap className="w-4 h-4 text-sky-500/30" />
             REELFACTORY V4.0 // DISTRIBUTED AUTONOMY
          </div>
-         <div className="flex gap-12 font-mono text-[8px] uppercase tracking-widest text-slate-800">
+         <div className="flex gap-12 font-mono text-[8px] uppercase tracking-widest text-slate-500">
             <span>SYNC_LATENCY: 0.42MS</span>
             <span>NODES: 12_ACTIVE</span>
             <span>OS: NEURAL_KERNEL_V4</span>
@@ -1417,167 +2164,9 @@ export default function App() {
   );
 }
 
-function VideoPlayer({ src, onMetadata }: { src: string, onMetadata?: (e: any) => void }) {
-  const [playing, setPlaying] = useState(false);
-  const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration, setDuration] = useState(0);
-  const videoRef = useRef<HTMLVideoElement>(null);
-
-  const togglePlay = () => {
-    if (videoRef.current) {
-      if (playing) {
-        videoRef.current.pause();
-      } else {
-        videoRef.current.play();
-      }
-      setPlaying(!playing);
-    }
-  };
-
-  const toggleMute = () => {
-    if (videoRef.current) {
-      const newMuted = !muted;
-      videoRef.current.muted = newMuted;
-      setMuted(newMuted);
-    }
-  };
-
-  const handleTimeUpdate = () => {
-    if (videoRef.current) {
-      setCurrentTime(videoRef.current.currentTime);
-    }
-  };
-
-  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const time = parseFloat(e.target.value);
-    setCurrentTime(time);
-    if (videoRef.current) {
-      videoRef.current.currentTime = time;
-    }
-  };
-
-  const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const val = parseFloat(e.target.value);
-    setVolume(val);
-    if (videoRef.current) {
-      videoRef.current.volume = val;
-      videoRef.current.muted = val === 0;
-      setMuted(val === 0);
-    }
-  };
-
-  const formatTime = (time: number) => {
-    const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const handleFullscreen = () => {
-    if (videoRef.current) {
-      if (videoRef.current.requestFullscreen) {
-        videoRef.current.requestFullscreen();
-      }
-    }
-  };
-
-  return (
-    <div className="relative group w-full h-full overflow-hidden flex flex-col bg-black">
-       <video 
-          ref={videoRef}
-          src={src}
-          onLoadedMetadata={(e) => {
-            if (videoRef.current) setDuration(videoRef.current.duration);
-            onMetadata?.(e);
-          }}
-          onTimeUpdate={handleTimeUpdate}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
-          onClick={togglePlay}
-          className="w-full h-full flex-1 object-cover cursor-pointer"
-          autoPlay
-          loop
-          playsInline
-       />
-       
-       {/* Center Play Button Overlay */}
-       <AnimatePresence>
-          {!playing && (
-             <motion.div 
-                initial={{ opacity: 0, scale: 0.5 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 1.5 }}
-                onClick={togglePlay}
-                className="absolute inset-0 flex items-center justify-center bg-slate-950/20 backdrop-blur-[2px] z-10 cursor-pointer"
-             >
-                <div className="w-20 h-20 rounded-full bg-sky-500 flex items-center justify-center shadow-2xl shadow-sky-500/40">
-                   <Play className="w-8 h-8 text-slate-950 fill-current ml-1" />
-                </div>
-             </motion.div>
-          )}
-       </AnimatePresence>
-       
-       <div className={`absolute inset-x-0 bottom-0 bg-gradient-to-t from-slate-950 via-slate-950/80 to-transparent p-6 space-y-4 transition-all duration-500 z-20 ${playing ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'}`}>
-          {/* Progress Slider */}
-          <div className="flex items-center gap-4">
-             <span className="text-[10px] font-mono font-bold text-sky-400 w-10">{formatTime(currentTime)}</span>
-             <input 
-                type="range" 
-                min="0" 
-                max={duration || 0} 
-                step="0.1" 
-                value={currentTime}
-                onChange={handleSeek}
-                className="flex-1 h-1 bg-white/10 rounded-full accent-sky-500 cursor-pointer hover:accent-sky-400 transition-all appearance-none"
-             />
-             <span className="text-[10px] font-mono font-bold text-slate-500 w-10">{formatTime(duration)}</span>
-          </div>
-
-          <div className="flex justify-between items-center">
-             <div className="flex items-center gap-6">
-                <button onClick={togglePlay} className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-white border border-white/5">
-                   {playing ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current" />}
-                </button>
-                <div className="flex items-center gap-3">
-                   <button onClick={toggleMute} className="text-slate-400 hover:text-white transition-colors">
-                      {muted || volume === 0 ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
-                   </button>
-                   <input 
-                      type="range" 
-                      min="0" 
-                      max="1" 
-                      step="0.05" 
-                      value={muted ? 0 : volume}
-                      onChange={handleVolumeChange}
-                      className="w-24 h-1 bg-white/10 rounded-full accent-sky-500 cursor-pointer appearance-none"
-                   />
-                </div>
-             </div>
-
-             <div className="flex items-center gap-4">
-                <button 
-                  onClick={() => { if (videoRef.current) videoRef.current.currentTime = 0; }}
-                  className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-slate-500 hover:text-sky-400 border border-white/5"
-                >
-                   <RotateCcw className="w-4 h-4" />
-                </button>
-                <button 
-                  onClick={handleFullscreen}
-                  className="p-3 bg-white/5 hover:bg-white/10 rounded-xl transition-all text-slate-500 hover:text-sky-400 border border-white/5"
-                >
-                   <Maximize className="w-4 h-4" />
-                </button>
-             </div>
-          </div>
-       </div>
-    </div>
-  );
-}
-
 function StepIcon({ active, icon }: { active: boolean, icon: React.ReactNode }) {
   return (
-    <div className={`w-10 h-10 rounded flex items-center justify-center z-10 transition-all border ${active ? 'bg-slate-800 border-sky-500 text-sky-400 shadow-[0_0_15px_rgba(14,165,233,0.2)]' : 'bg-slate-900 border-slate-800 text-slate-700'}`}>
+    <div className={`w-10 h-10 rounded flex items-center justify-center z-10 transition-all border ${active ? 'bg-slate-800 border-sky-500 text-sky-400 shadow-[0_0_15px_rgba(14,165,233,0.2)]' : 'bg-slate-900 border-slate-800 text-slate-500'}`}>
        {icon}
     </div>
   );
@@ -1590,7 +2179,7 @@ function IntegrationCard({ name, desc, status, icon }: { name: string, desc: str
           {icon}
        </div>
        <div className="flex justify-between items-start">
-          <div className={`p-4 bg-slate-950 rounded-2xl border transition-colors ${status === 'Operational' || status === 'Connected' || status === 'Hardened' ? 'border-sky-500/20 text-sky-500' : 'border-slate-800 text-slate-600'}`}>
+          <div className={`p-4 bg-slate-950 rounded-2xl border transition-colors ${status === 'Operational' || status === 'Connected' || status === 'Hardened' ? 'border-sky-500/10 border-sky-500/50 text-sky-500' : 'border-slate-800 text-slate-400'}`}>
              {icon}
           </div>
           <div className={`text-[8px] font-black uppercase tracking-[0.3em] px-3 py-1 rounded-full border ${status === 'Operational' || status === 'Connected' || status === 'Hardened' ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20 shadow-[0_0_8px_rgba(16,185,129,0.2)]' : 'bg-amber-500/10 text-amber-500 border-amber-500/20'}`}>
@@ -1599,7 +2188,7 @@ function IntegrationCard({ name, desc, status, icon }: { name: string, desc: str
        </div>
        <div>
           <h4 className="font-black text-sm mb-2 uppercase italic tracking-tighter text-white">{name}</h4>
-          <p className="text-[10px] text-slate-500 uppercase font-bold tracking-[0.1em] leading-relaxed line-clamp-2">{desc}</p>
+          <p className="text-[10px] text-slate-400 uppercase font-bold tracking-[0.1em] leading-relaxed line-clamp-2">{desc}</p>
        </div>
     </div>
   );
@@ -1651,7 +2240,7 @@ function SecretInput({
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
-        <label className="text-[10px] font-black text-slate-500 uppercase tracking-[0.4em]">{label}</label>
+        <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.4em]">{label}</label>
         {helpLink && (
           <a 
             href={helpLink} 
@@ -1677,7 +2266,7 @@ function SecretInput({
         <div className="absolute right-4 top-1/2 -translate-y-1/2 flex items-center gap-3">
           <button 
             onClick={(e) => { e.preventDefault(); setShow(!show); }}
-            className="text-slate-700 hover:text-sky-500 transition-colors"
+            className="text-slate-400 hover:text-sky-500 transition-colors"
           >
             {show ? <Copy className="w-4 h-4" /> : <Settings className="w-4 h-4" />}
           </button>
